@@ -39,9 +39,13 @@ def parse_args(argv=None):
     parser.add_argument("--hold-seconds", type=finite_range(0, 30), default=2.0)
     parser.add_argument("--state-wait", type=finite_range(1, 60), default=10.0)
     parser.add_argument("--execute", action="store_true", help="Publish real motor commands")
+    parser.add_argument("--probe", action="store_true",
+                        help="Read robot state and query modes without motor commands")
     args = parser.parse_args(argv)
-    if args.execute and not args.interface:
-        parser.error("--execute requires --interface")
+    if (args.execute or args.probe) and not args.interface:
+        parser.error("--execute/--probe requires --interface")
+    if args.execute and args.probe:
+        parser.error("--probe and --execute cannot be used together")
     return args
 
 
@@ -124,6 +128,7 @@ class ArmMotion:
         self.last_q = initial.q
         self.weight = 0.0
         self.attempted = False
+        self.report_at = 0.0
         command.mode_pr = 0  # PR joint control, not ankle AB control.
         command.mode_machine = initial.mode_machine
         for joint in UPPER_JOINTS:
@@ -147,10 +152,18 @@ class ArmMotion:
     def segment(self, start, end, duration, weight_start, weight_end):
         elapsed = 0.0
         while True:
-            self.receiver.snapshot(self.initial.mode_machine)
+            sample = self.receiver.snapshot(self.initial.mode_machine)
             fraction = min(1.0, elapsed / duration)
             self.write(blend(start, end, fraction),
                        weight_start + (weight_end - weight_start) * fraction)
+            if time.monotonic() >= self.report_at:
+                shoulder = UPPER_JOINTS.index(22)
+                print("[feedback] tick=%d mode_machine=%d weight=%.2f "
+                      "right_shoulder_pitch: cmd=%.1f deg actual=%.1f deg" % (
+                          sample.tick, sample.mode_machine, self.weight,
+                          math.degrees(self.last_q[shoulder]),
+                          math.degrees(sample.q[shoulder])), flush=True)
+                self.report_at = time.monotonic() + 1.0
             if fraction >= 1.0:
                 return
             # No catch-up bursts if scheduling is delayed.
@@ -169,6 +182,15 @@ class ArmMotion:
         self.segment(initial, initial, 2.0, 0.0, 1.0)
         print("Raising right arm", flush=True)
         self.segment(initial, target, duration, 1.0, 1.0)
+        shoulder = UPPER_JOINTS.index(22)
+        measured = self.receiver.snapshot(self.initial.mode_machine).q[shoulder]
+        if (abs(target[shoulder] - initial[shoulder]) > math.radians(5)
+                and abs(measured - initial[shoulder]) < math.radians(1)):
+            raise RuntimeError(
+                "NO_ARM_RESPONSE: shoulder feedback changed less than 1 degree despite "
+                "a target change greater than 5 degrees. DDS Write success does not confirm "
+                "robot acceptance. Check high-level mode, arm_sdk reader/network, other "
+                "arm publishers and firmware. Run --probe without --execute for mode queries.")
         if args.hold_seconds:
             print("Holding right arm", flush=True)
             self.segment(target, target, args.hold_seconds, 1.0, 1.0)
@@ -191,6 +213,25 @@ class ArmMotion:
             time.sleep(CONTROL_DT)
 
 
+def query_modes():
+    # Get-only RPC calls. Do not call ReleaseMode, SelectMode or SetFsmId.
+    queries = (
+        ("motion_switcher", "unitree_sdk2py.comm.motion_switcher.motion_switcher_client",
+         "MotionSwitcherClient", "CheckMode"),
+        ("loco_fsm", "unitree_sdk2py.g1.loco.g1_loco_client", "LocoClient", "GetFsmId"),
+    )
+    import importlib
+    for name, module_name, class_name, method in queries:
+        try:
+            client = getattr(importlib.import_module(module_name), class_name)()
+            client.SetTimeout(2.0)
+            client.Init()
+            code, data = getattr(client, method)()
+            print(json.dumps({"query": name, "code": code, "data": data}), flush=True)
+        except Exception as error:
+            print(json.dumps({"query": name, "error": str(error)}), flush=True)
+
+
 def execute(args):
     # Delay SDK imports: preview and --help work on a computer without DDS.
     from unitree_sdk2py.core.channel import (
@@ -209,6 +250,15 @@ def execute(args):
         subscriber.Init(receiver.receive, 1)
         print("Waiting for fresh G1 lowstate...", flush=True)
         receiver.wait(args.state_wait)
+        if args.probe:
+            sample = receiver.snapshot()
+            print(json.dumps({"mode": "probe_no_motor_commands", "tick": sample.tick,
+                              "mode_machine": sample.mode_machine,
+                              "upper_joint_indices": UPPER_JOINTS,
+                              "upper_q_deg": [round(math.degrees(q), 2) for q in sample.q]}),
+                  flush=True)
+            query_modes()
+            return
         publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
         publisher.Init()
         initial = receiver.snapshot()  # Refresh after publisher discovery.
@@ -230,18 +280,19 @@ def execute(args):
 def main(argv=None):
     args = parse_args(argv)
     print(json.dumps({
-        "execute": args.execute, "command_topic": "rt/arm_sdk",
+        "execute": args.execute, "probe": args.probe, "command_topic": "rt/arm_sdk",
         "state_topic": "rt/lowstate", "interface": args.interface, "domain": args.domain,
         "right_joint_indices": RIGHT_JOINTS,
         "right_target_rad": right_target(args),
         "sequence": "take control -> lift -> hold -> return -> release",
     }, indent=2), flush=True)
-    if not args.execute:
+    if not args.execute and not args.probe:
         print("Preview only. Add --interface eth0 --execute on the robot-connected PC2.")
         return 0
-    print("G1-29 must already be standing in a stable high-level balance mode. "
-          "Stop other arm publishers; keep the arm workspace clear and the remote stop ready.",
-          flush=True)
+    if args.execute:
+        print("G1-29 must already be standing in a stable high-level balance mode. "
+              "Stop other arm publishers; keep the arm workspace clear and the remote stop ready.",
+              flush=True)
     execute(args)
     return 0
 

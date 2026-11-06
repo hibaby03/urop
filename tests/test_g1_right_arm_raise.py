@@ -59,7 +59,13 @@ class ArmTests(unittest.TestCase):
 
     def test_full_trajectory_holds_left_arm_and_waist_and_returns(self):
         args = arm.parse_args([])
-        with patch.object(arm.time, "sleep", side_effect=self.advance), patch("builtins.print"):
+        def follow_command(dt):
+            self.now += dt
+            sample = state(tick=self.receiver.state.tick + 1, q=0.1)
+            for joint in arm.UPPER_JOINTS:
+                sample.motor_state[joint].q = self.publisher.messages[-1].motor_cmd[joint].q
+            self.receiver.receive(sample)
+        with patch.object(arm.time, "sleep", side_effect=follow_command), patch("builtins.print"):
             self.motion.run(args)
         messages = self.publisher.messages
         target = arm.right_target(args)
@@ -136,6 +142,16 @@ class ArmTests(unittest.TestCase):
         self.motion.abort()
         self.assertEqual(self.publisher.messages, [])
 
+    def test_fresh_but_motionless_feedback_is_not_success(self):
+        with patch.object(arm.time, "sleep", side_effect=self.advance), patch("builtins.print"):
+            with self.assertRaisesRegex(RuntimeError, "NO_ARM_RESPONSE"):
+                self.motion.run(arm.parse_args([]))
+
+    def test_probe_requires_interface_and_excludes_execute(self):
+        for argv in (["--probe"], ["--probe", "--execute", "--interface", "eth0"]):
+            with patch("sys.stderr"), self.assertRaises(SystemExit):
+                arm.parse_args(argv)
+
     @contextmanager
     def fake_sdk(self, deliver_state=True):
         subscriber = SimpleNamespace(Close=unittest.mock.Mock())
@@ -171,6 +187,16 @@ class ArmTests(unittest.TestCase):
             with patch.object(arm.time, "sleep", side_effect=lambda dt: setattr(self, "now", self.now + dt)):
                 with self.assertRaisesRegex(RuntimeError, "No G1 lowstate"):
                     arm.execute(args)
+            create_publisher.assert_not_called()
+            subscriber.Close.assert_called_once()
+        self.assertEqual(self.publisher.messages, [])
+
+    def test_probe_queries_modes_without_motor_publisher(self):
+        args = arm.parse_args(["--probe", "--interface", "eth0"])
+        with self.fake_sdk() as (subscriber, create_publisher, _):
+            with patch.object(arm, "query_modes") as query, patch("builtins.print"):
+                arm.execute(args)
+            query.assert_called_once_with()
             create_publisher.assert_not_called()
             subscriber.Close.assert_called_once()
         self.assertEqual(self.publisher.messages, [])
