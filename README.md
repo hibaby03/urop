@@ -7,7 +7,7 @@ Host에는 `host/`만, PC2에는 `pc2/`만 복사하면 된다. 추가 공용 �
 
 ## 빠른 실행 (영상 + 목 추종)
 
-현재 네트워크: Host `192.168.50.3`, 로봇/PC2 `192.168.50.9`. 아래 기본값에
+현재 네트워크: Host `192.168.123.7`, 로봇/PC2 `192.168.123.164`. 아래 기본값에
 이미 반영돼 있어 주소를 따로 넣지 않는다.
 
 ```bash
@@ -25,7 +25,7 @@ python active_camera_host/zmq_stereo_vr.py
 그다음 Quest 브라우저에서 접속하고 **Enter VR**:
 
 ```text
-https://192.168.50.3:8012/?ws=wss://192.168.50.3:8012
+https://192.168.123.7:8012/?ws=wss://192.168.123.7:8012
 ```
 
 - 목 수신기는 켜는 즉시 **현재 위치를 goal로 잡고 토크를 유지**하므로 처지지 않고,
@@ -158,7 +158,7 @@ python3 pc2/zed_teleimager_server.py --serial-number 12345678
 Quest를 연결하기 전에 다음 주소에서 WebRTC 영상이 좌우로 붙어 나오는지 확인한다.
 
 ```text
-https://192.168.50.9:60001
+https://192.168.123.164:60001
 ```
 
 화면의 왼쪽 절반이 ZED LEFT, 오른쪽 절반이 ZED RIGHT여야 한다.
@@ -232,9 +232,9 @@ cd ~/hckang/xr_teleoperate
 python active_camera_host/run_teleop_with_neck.py \
   --xr-repo . \
   --input-mode=none \
-  --video-offer-url https://192.168.50.9:60001/offer \
+  --video-offer-url https://192.168.123.164:60001/offer \
   --video-cert /path/to/cert.pem --video-key /path/to/key.pem \
-  --neck-pose-ip 192.168.50.9 --neck-pose-port 5005 --neck-pose-rate 60
+  --neck-pose-ip 192.168.123.164 --neck-pose-port 5005 --neck-pose-rate 60
 ```
 
 3. PC2의 다른 터미널에서 먼저 모터 없이 `python3 pc2/head_pose_receiver.py`를
@@ -279,10 +279,10 @@ python active_camera_host/zmq_stereo_vr.py
 python active_camera_host/zmq_stereo_vr.py --no-neck
 ```
 
-`--img-server-ip`와 `--neck-pose-ip`의 기본값은 로봇 주소(192.168.50.9)이므로
+`--img-server-ip`와 `--neck-pose-ip`의 기본값은 로봇 주소(192.168.123.164)이므로
 보통 옵션 없이 실행한다. 영상만 보려면 `--no-neck`, 주소가 다르면 각 옵션으로 덮어쓴다.
 
-Quest 브라우저에서 기존과 같은 `https://192.168.50.3:8012/?ws=wss://192.168.50.3:8012`로
+Quest 브라우저에서 기존과 같은 `https://192.168.123.7:8012/?ws=wss://192.168.123.7:8012`로
 접속한다. 인증서는 `--cert/--key`, `XR_TELEOP_CERT/KEY`, `~/.config/xr_teleoperate/` 순으로
 찾는다. 2초마다 수신/송신 fps와 영상 지연(PC2 캡처 → Host 시점, clock sync 필요)이
 출력된다. Quest 화면까지의 지연은 여기에 Vuer JPEG 재인코딩과 Wi-Fi 전송이 더해진다.
@@ -311,10 +311,10 @@ ZED stereo 영상과 robot state/action을 episode로 함께 저장하려면 반
 ```bash
 python active_camera_host/run_teleop_with_neck.py \
   --xr-repo . \
-  --neck-pose-ip 192.168.50.9 \
+  --neck-pose-ip 192.168.123.164 \
   --neck-pose-port 5005 \
   --neck-pose-rate 60 \
-  --img-server-ip 192.168.50.9 \
+  --img-server-ip 192.168.123.164 \
   --arm=G1_29 \
   --ee=dex3 \
   --input-mode=hand \
@@ -327,7 +327,7 @@ launcher는 `--xr-repo`와 `--neck-*`만 소비하고 나머지는 현재 설치
 `teleop_hand_and_arm.py`에 그대로 전달한다. Quest 접속 주소도 기존과 같다.
 
 ```text
-https://192.168.50.3:8012/?ws=wss://192.168.50.3:8012
+https://192.168.123.7:8012/?ws=wss://192.168.123.7:8012
 ```
 
 녹화된 각 timestep에는 ZED left/right가 각각 `color_0`, `color_1`로 저장된다.
@@ -351,8 +351,8 @@ export PYTHONNOUSERSITE=1
 cd ~/hckang/jslee/unitree_g1_urop
 python -m host.teleop_record_dex3_tactile \
   --xr-repo ~/hckang/xr_teleoperate \
-  --img-server-ip 192.168.50.9 \
-  --neck-pose-ip 192.168.50.9 --neck-pose-port 5005 --neck-pose-rate 60 \
+  --img-server-ip 192.168.123.164 \
+  --neck-pose-ip 192.168.123.164 --neck-pose-port 5005 --neck-pose-rate 60 \
   --neck-state-port 5006 \
   --network-interface wlo1 --screen-y -0.1 --headless --record \
   --task-dir ~/hckang/datasets --task-name active_stereo_task
@@ -363,8 +363,8 @@ python -m host.teleop_record_dex3_tactile \
 `--task-goal/desc/steps`도 받는다. `--arm`, `--ee`, `--input-mode`는 고정이므로 주지
 않는다. 구형 API에서는 `--display-mode immersive`만 지원한다.
 `--task-dir` 상대 경로는 명령을 실행한 디렉터리 기준이며 내부 cwd 변경에 영향을 받지 않는다.
-현재 확인된 Host NIC는 `wlo1`, IP는 `192.168.50.7`이다. Quest URL의 Host 주소는
-실행 시 `ip -br addr` 결과를 사용한다. PC2 주소는 `192.168.50.9`로 유지한다.
+현재 확인된 Host NIC는 `wlo1`, IP는 `192.168.123.7`이다. Quest URL의 Host 주소는
+실행 시 `ip -br addr` 결과를 사용한다. PC2 주소는 `192.168.123.164`로 유지한다.
 `r`과 양손/머리 추적이 준비된 뒤 팔·손 컨트롤러와 목 추종을 시작한다.
 
 각 item에 저장되는 값:
@@ -479,8 +479,8 @@ python active_camera_host/deploy_act.py \
   --xr-repo . \
   --checkpoint /path/to/policy_best.ckpt \
   --train-script /path/to/training/train_act.py \
-  --img-server-ip 192.168.50.9 \
-  --neck-pose-ip 192.168.50.9 \
+  --img-server-ip 192.168.123.164 \
+  --neck-pose-ip 192.168.123.164 \
   --dry-run
 ```
 
