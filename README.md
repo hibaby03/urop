@@ -1,5 +1,8 @@
 # xr_teleoperate + ZED Mini 2-DoF active stereo camera
 
+`arm_sdk`로 오른팔만 앞으로 들어 올리는 독립 실행 예제는
+[오른팔 arm_sdk 실행 안내](RIGHT_ARM_SDK_KO.md)를 참고한다.
+
 목 추종 지연을 측정하려면 [Quest–목 모터 지연 계측 안내](NECK_LATENCY_KO.md)를 참고한다.
 Host/PC2 실행 시 `NECK_TRACE_DIR`를 지정하면 구간별 시간과 자세·패킷 ID를 기록한다.
 계측용 시계 오프셋 측정은 UDP 5010을 사용하며 기본 제어 패킷과 제어 순서는 유지한다.
