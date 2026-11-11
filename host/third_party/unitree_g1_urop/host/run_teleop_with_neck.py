@@ -50,7 +50,20 @@ def parse_launcher_args(
     )
     parser.add_argument("--video-cert", help="Host TLS certificate; or XR_TELEOP_CERT")
     parser.add_argument("--video-key", help="Host TLS private key; or XR_TELEOP_KEY")
+    # Full teleop only: show PC2's display stream (ZMQ 55556) in the Quest from inside the teleop's own
+    # Vuer server (display_relay.py, added by urop). These flags are consumed here, not forwarded.
+    parser.add_argument("--no-display-relay", action="store_true",
+                        help="do not add the Quest video relay; the teleop script shows what it receives itself")
+    parser.add_argument("--display-ip", default=None, help="PC2 address of the display stream "
+                        "(default: --neck-pose-ip)")
+    parser.add_argument("--display-port", type=int, default=55556, help="PC2 per-eye display stream (ZMQ)")
+    parser.add_argument("--screen-y", type=float, default=-0.1, help="height of the image plane [m]")
+    parser.add_argument("--display-distance", type=float, default=1.0, help="distance of the image plane [m]")
     args, remaining = parser.parse_known_args(argv)
+    if not 1 <= args.display_port <= 65535:
+        parser.error("--display-port must be in 1..65535")
+    if not (args.display_distance > 0.0 and abs(args.screen_y) < 100.0):
+        parser.error("--display-distance must be positive and --screen-y finite")
     if args.video_only and args.input_mode is not None:
         parser.error("--video-only and --input-mode cannot be combined")
     if args.video_only or args.input_mode == "none":
@@ -295,10 +308,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import televuer  # Imported after the selected repository is on sys.path.
     from head_pose_udp import HeadPoseUdpSender, enabled, install_televuer_hook, send_televuer_pose
 
+    wrapper_module = sys.modules[televuer.TeleVuerWrapper.__module__]
     if enabled():
         # Patch the class object referenced by the installed wrapper before its fork.
-        wrapper_module = sys.modules[televuer.TeleVuerWrapper.__module__]
         install_televuer_hook(wrapper_module.TeleVuer)
+    if not launcher_args.no_display_relay:
+        # Quest picture: PC2's display stream relayed unchanged by the teleop's own Vuer server (after the
+        # trace hook above, so the relay class is built on the hooked one). See display_relay.py.
+        from display_relay import install_display_relay
+        install_display_relay(
+            wrapper_module, ip=launcher_args.display_ip or launcher_args.neck_pose_ip,
+            port=launcher_args.display_port, screen_y=launcher_args.screen_y,
+            distance=launcher_args.display_distance)
     original_wrapper = televuer.TeleVuerWrapper
     destination_ip = launcher_args.neck_pose_ip
     destination_port = launcher_args.neck_pose_port

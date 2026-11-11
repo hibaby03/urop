@@ -65,6 +65,10 @@ processes:
   # Keys: that script reads the keyboard itself (sshkeyboard), so main.py gives it a pseudo-terminal and types
   # only `r` (start following) and `q` (quit) into it (teleop_input: pty). Do NOT pass --ipc with pty.
   # xr_teleoperate versions that have --ipc can use `teleop_input: ipc` and add `--ipc` below instead.
+  # Quest video: the installed teleop script waits for the old image_server (5555) and never receives the ZED, so the
+  # launcher adds a relay of PC2's display stream (ZMQ 55556, JPEG per eye, forwarded unchanged to Vuer; same logic as
+  # zmq_stereo_vr.py). It is on by default. Flags (all optional): --display-ip (default: --neck-pose-ip), --display-port 55556,
+  # --screen-y -0.1, --display-distance 1.0, --no-display-relay. Hand tracking mode only.
   xr_teleop:
     mode: launch
     cwd: ~/hckang/xr_teleoperate
