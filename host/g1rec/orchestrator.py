@@ -12,6 +12,7 @@ import collections
 import json
 import os
 import pty
+import re
 import select
 import shlex
 import shutil
@@ -27,6 +28,30 @@ from .config import Config, ProcessSpec
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+WAIT_REPORT_S = 3.0         # while waiting for a program to become ready, say what it is doing this often
+READY_WINDOW_LINES = 6      # recent output lines searched together
+READY_GAP_CHARS = 80        # text allowed between two words of the phrase (wrapped lines, log columns)
+
+
+def ready_matches(window_text: str, ready_text: str) -> bool:
+    """True if any `|`-separated phrase of ``ready_text`` appears in ``window_text``.
+
+    The teleop's logger wraps a long message over several lines and puts a right-aligned
+    ``file.py:388`` column in the middle ("...Please enter the start    teleop_hand_and_arm.py:388 /
+    signal (enter 'r' ..."), so a phrase is matched word by word with a bounded gap between words,
+    over the last few lines joined together, not as one contiguous substring of one line.
+    """
+
+    for phrase in ready_text.split("|"):
+        words = phrase.split()
+        if not words:
+            continue
+        pattern = (".{0,%d}?" % READY_GAP_CHARS).join(re.escape(w) for w in words)
+        if re.search(pattern, window_text, re.S):
+            return True
+    return False
 
 
 def expand_root(text: str) -> str:
@@ -82,7 +107,8 @@ class ManagedProcess:
             return
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log = open(self.log_path, "ab")
-        env = {**os.environ, **{k: str(v) for k, v in self.spec.env.items()}}
+        # PYTHONUNBUFFERED: a child writing to a pipe would otherwise hold its output back for minutes.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", **{k: str(v) for k, v in self.spec.env.items()}}
         cwd = str(Path(self.spec.cwd).expanduser()) if self.spec.cwd and not self.spec.ssh else None
         # The orchestrator owns the real keyboard. Children get no terminal input (DEVNULL), except a
         # child that reads keys itself (tty=True): it gets a pseudo-terminal, and only the keys the
@@ -108,8 +134,10 @@ class ManagedProcess:
             self._log.flush()
             line = raw.decode(errors="replace").rstrip()
             self.tail.append(line)
-            if self.spec.ready_text and any(t in line for t in self.spec.ready_text.split("|")):
-                self.ready.set()
+            if self.spec.ready_text and not self.ready.is_set():
+                window = " ".join(x.strip() for x in list(self.tail)[-READY_WINDOW_LINES:])
+                if ready_matches(window, self.spec.ready_text):
+                    self.ready.set()
 
     def alive(self) -> bool:
         return self.spec.mode == "external" or (self.proc is not None and self.proc.poll() is None)
@@ -128,13 +156,26 @@ class ManagedProcess:
     def saw(self, *texts: str) -> bool:
         return any(t in line for line in self.tail for t in texts)
 
-    def wait_ready(self) -> bool:
-        deadline = time.monotonic() + self.spec.ready_timeout_s
+    def last_line(self, width: int = 110) -> str:
+        for line in reversed(self.tail):
+            if line.strip():
+                return line.strip()[:width]
+        return "(no output yet)"
+
+    def wait_ready(self, on_wait: Optional[Callable[[float, str], None]] = None, interval: float = 3.0) -> bool:
+        """Wait for the ready phrase; ``on_wait(seconds_waited, last_output_line)`` is called every ``interval`` s."""
+
+        started = time.monotonic()
+        deadline = started + self.spec.ready_timeout_s
+        next_report = started + interval
         while time.monotonic() < deadline:
             if self.ready.wait(0.2):
                 return True
             if not self.alive():
                 return False
+            if on_wait is not None and time.monotonic() >= next_report:
+                on_wait(time.monotonic() - started, self.last_line())
+                next_report += interval
         return False
 
     def stop(self) -> None:
@@ -263,6 +304,7 @@ class Orchestrator:
         self.ipc = None
         self.recording = False
         self._teleop_started = False
+        self._recorder_problems: list = []
         self._events: "collections.deque[dict]" = collections.deque()
         self._lock = threading.Lock()
 
@@ -332,17 +374,25 @@ class Orchestrator:
                 managed = ManagedProcess(self.cfg.processes[name], self.log_dir,
                                          tty=(name == "xr_teleop" and self.cfg.teleop_input == "pty"))
                 self.managed[name] = managed
+                if self.cfg.processes[name].mode == "launch":
+                    self.out(f"[START] {name} 시작 중... (준비될 때까지 최대 {self.cfg.processes[name].ready_timeout_s:.0f}초)")
                 managed.start()
-                if not managed.wait_ready():
+                if not managed.wait_ready(on_wait=lambda secs, line, n=name:
+                                          self.out(f"[WAIT] {n} 준비 대기 {secs:.0f}s  마지막 출력: {line}"),
+                                          interval=WAIT_REPORT_S):
                     self.out(f"[FAIL] {name}: not ready. Last output:\n  " + "\n  ".join(list(managed.tail)[-8:]))
                     return False
             external = all(self.cfg.processes[n].mode == "external" for n in names)
-            self.out(f"[OK] {label}" + (" (external)" if external else ""))
+            waits_for_r = (prefix == "xr_teleop" and not external and self.cfg.teleop_input == "pty")
+            self.out(f"[OK] {label}" + (" (external)" if external else "")
+                     + ("  -> 로봇 팔로우 시작(r 입력) 대기 중" if waits_for_r else ""))
+        self.out("[START] Recorder 시작 중... (스트림 수신 확인, 최대 약 30초)")
         self.recorder.start()
         ready = self.recorder.wait_ready(60)
         if ready is None:
             self.out("[FAIL] Recorder did not start; see " + str(self.log_dir / "recorder.log"))
             return False
+        self._recorder_problems = ready.get("problems", []) if ready["event"] != "ready" else []
         if ready["event"] == "ready":
             self.out("[OK] Recorder Ready")
         else:
@@ -399,8 +449,21 @@ class Orchestrator:
         self.out("[WARN] teleop did not report START")
         return False
 
+    def instructions(self) -> str:
+        """What to do now, printed as soon as everything is up (so nobody waits for a prompt that never comes)."""
+
+        lines = ["", "지금 할 일:",
+                 "  1) Quest 브라우저에서 Enter VR 후, 양손과 머리가 인식되는지 확인하세요.",
+                 "  2) 준비되면 r 을 누르세요. 로봇이 VR 움직임을 따라 움직이기 시작하고 녹화도 시작됩니다.",
+                 "     (로봇 주변을 비우고 시작하세요)"]
+        if self._recorder_problems:
+            lines += ["", "[주의] 레코더가 아직 일부 스트림을 받지 못했습니다 (r을 눌러도 이 스트림이 올 때까지 프레임은 버려집니다):"]
+            lines += [f"       - {problem}" for problem in self._recorder_problems]
+        lines += ["", "Press:", "  r - Start Episode (팔로우 + 녹화 시작)", "  s - Stop & Save Episode", "  q - Quit", ""]
+        return "\n".join(lines)
+
     def loop(self) -> None:
-        self.out("\nPress:\n  r - Start Episode\n  s - Stop & Save Episode\n  q - Quit\n")
+        self.out(self.instructions())
         with Keyboard() as keyboard:
             while True:
                 self._drain_events()
