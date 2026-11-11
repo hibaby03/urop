@@ -73,7 +73,8 @@ class Config:
     g1_urop_host: Optional[str] = None             # null = the bundled copy in third_party/unitree_g1_urop/host
     pc2_sync: Optional[dict] = None                # {ssh, src, dest}: copy the bundled pc2/ to PC2 before launching
     xr_repo: Optional[str] = None                  # xr_teleoperate checkout (DDS message modules, teleimager)
-    teleop_input: str = "ipc"                      # ipc: keys are sent to the official teleop over its IPC server
+    teleop_input: str = "pty"                      # pty: keys typed into a pseudo-terminal the teleop reads (any version)
+                                                   # ipc: official teleop started with --ipc (newer versions only)
     action_alignment: str = "next"                 # next: first command issued at/after the tick (UAF-style); asof
     raw_flush_s: float = 2.0
     min_free_gb: float = 2.0
@@ -125,8 +126,8 @@ def validate(cfg: Config) -> None:
             raise ValueError("pc2_sync needs exactly the keys ssh, src, dest")
     if cfg.action_alignment not in ("next", "asof"):
         raise ValueError("action_alignment must be next or asof")
-    if cfg.teleop_input not in ("ipc",):
-        raise ValueError("teleop_input must be 'ipc'")
+    if cfg.teleop_input not in ("pty", "ipc"):
+        raise ValueError("teleop_input must be 'pty' or 'ipc'")
     for name, spec in cfg.processes.items():
         if spec.mode not in ("launch", "external"):
             raise ValueError(f"process {name}: mode must be launch or external")

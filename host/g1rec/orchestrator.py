@@ -11,6 +11,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import pty
 import select
 import shlex
 import shutil
@@ -56,8 +57,10 @@ def run_sync(sync: dict, run=subprocess.run, which=shutil.which) -> tuple[bool, 
 
 
 class ManagedProcess:
-    def __init__(self, spec: ProcessSpec, log_dir: Path) -> None:
+    def __init__(self, spec: ProcessSpec, log_dir: Path, tty: bool = False) -> None:
         self.spec = spec
+        self.tty = tty                      # give the child a pseudo-terminal as stdin (it reads keys itself)
+        self._master: Optional[int] = None
         self.proc: Optional[subprocess.Popen] = None
         self.tail: collections.deque = collections.deque(maxlen=200)
         self.ready = threading.Event()
@@ -81,11 +84,19 @@ class ManagedProcess:
         self._log = open(self.log_path, "ab")
         env = {**os.environ, **{k: str(v) for k, v in self.spec.env.items()}}
         cwd = str(Path(self.spec.cwd).expanduser()) if self.spec.cwd and not self.spec.ssh else None
-        # stdin is closed on purpose: the orchestrator owns the keyboard, so no child can
-        # read keys. New session: Ctrl-C in the terminal reaches only the orchestrator.
-        self.proc = subprocess.Popen(self.argv(), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        # The orchestrator owns the real keyboard. Children get no terminal input (DEVNULL), except a
+        # child that reads keys itself (tty=True): it gets a pseudo-terminal, and only the keys the
+        # orchestrator chooses to send_key() reach it. New session: Ctrl-C reaches only the orchestrator.
+        stdin: object = subprocess.DEVNULL
+        slave = None
+        if self.tty:
+            self._master, slave = pty.openpty()
+            stdin = slave
+        self.proc = subprocess.Popen(self.argv(), cwd=cwd, env=env, stdin=stdin,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      start_new_session=True)
+        if slave is not None:
+            os.close(slave)
         threading.Thread(target=self._pump, name=f"{self.spec.name}-out", daemon=True).start()
         if not self.spec.ready_text:
             self.ready.set()
@@ -103,6 +114,20 @@ class ManagedProcess:
     def alive(self) -> bool:
         return self.spec.mode == "external" or (self.proc is not None and self.proc.poll() is None)
 
+    def send_key(self, key: str) -> bool:
+        """Type one key into the child's pseudo-terminal."""
+
+        if self._master is None:
+            return False
+        try:
+            os.write(self._master, key.encode())
+            return True
+        except OSError:
+            return False
+
+    def saw(self, *texts: str) -> bool:
+        return any(t in line for line in self.tail for t in texts)
+
     def wait_ready(self) -> bool:
         deadline = time.monotonic() + self.spec.ready_timeout_s
         while time.monotonic() < deadline:
@@ -113,13 +138,24 @@ class ManagedProcess:
         return False
 
     def stop(self) -> None:
+        try:
+            self._stop_process()
+        finally:
+            if self._master is not None:
+                try:
+                    os.close(self._master)
+                except OSError:
+                    pass
+                self._master = None
+
+    def _stop_process(self) -> None:
         if self.proc is None or self.proc.poll() is not None:
             return
         for sig, wait in ((signal.SIGINT, self.spec.stop_timeout_s), (signal.SIGTERM, 5.0),
                           (signal.SIGKILL, 2.0)):
             try:
                 os.killpg(self.proc.pid, sig)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):     # already gone (macOS reports EPERM for a zombie)
                 return
             try:
                 self.proc.wait(timeout=wait)
@@ -226,6 +262,7 @@ class Orchestrator:
         self.recorder = RecorderProcess(config_path, self.log_dir, self._on_event)
         self.ipc = None
         self.recording = False
+        self._teleop_started = False
         self._events: "collections.deque[dict]" = collections.deque()
         self._lock = threading.Lock()
 
@@ -292,7 +329,8 @@ class Orchestrator:
                 self.out(f"[SKIP] {prefix}: not configured")
                 continue
             for name in names:
-                managed = ManagedProcess(self.cfg.processes[name], self.log_dir)
+                managed = ManagedProcess(self.cfg.processes[name], self.log_dir,
+                                         tty=(name == "xr_teleop" and self.cfg.teleop_input == "pty"))
                 self.managed[name] = managed
                 managed.start()
                 if not managed.wait_ready():
@@ -309,15 +347,38 @@ class Orchestrator:
             self.out("[OK] Recorder Ready")
         else:
             self.out("[WAIT] Recorder started but streams are missing: " + "; ".join(ready["problems"]))
-        try:
-            from .ipc_client import TeleopIpcClient
+        if self.cfg.teleop_input == "ipc":
+            try:
+                from .ipc_client import TeleopIpcClient
 
-            self.ipc = TeleopIpcClient()
-        except Exception as error:
-            self.out(f"[WARN] teleop IPC client unavailable ({error}); `r` will not start the teleop")
+                self.ipc = TeleopIpcClient()
+            except Exception as error:
+                self.out(f"[WARN] teleop IPC client unavailable ({error}); `r` will not start the teleop")
+        return True
+
+    START_MARKERS = ("start Tracking", "Program start signal", "start signal received")
+
+    def _start_teleop_via_pty(self) -> bool:
+        managed = self.managed.get("xr_teleop")
+        if managed is None or managed.spec.mode == "external" or self._teleop_started:
+            return True
+        self.out("Starting teleop following (typing `r` into the teleop's terminal)...")
+        if not managed.send_key("r"):
+            self.out("[WARN] could not type into the teleop terminal (is `xr_teleop` running?)")
+            return False
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if managed.saw(*self.START_MARKERS):
+                break
+            time.sleep(0.1)
+        else:
+            self.out("[WARN] the teleop did not confirm the start (hands/head tracked?); see recordings/logs/xr_teleop.log")
+        self._teleop_started = True
         return True
 
     def _ensure_teleop_started(self) -> bool:
+        if self.cfg.teleop_input == "pty":
+            return self._start_teleop_via_pty()
         if self.ipc is None:
             return True
         state = self.ipc.state()
@@ -364,6 +425,10 @@ class Orchestrator:
         self.out("Shutting down (a running episode is saved first)...")
         self.recorder.stop()
         self._drain_events()
+        teleop = self.managed.get("xr_teleop")
+        if self.cfg.teleop_input == "pty" and teleop is not None:
+            teleop.send_key("q")                    # the teleop's own quit key, then it is stopped below
+            time.sleep(1.0)
         if self.ipc is not None:
             try:
                 self.ipc.stop_teleop()

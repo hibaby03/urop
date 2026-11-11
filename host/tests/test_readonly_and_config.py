@@ -115,4 +115,78 @@ def test_shipped_config_uses_the_existing_addresses_and_readme_commands():
     assert zed.ssh == neck.ssh == "192.168.123.164" == cfg.images.pc2_ip
     assert zed.cmd == ["python3", "pc2/zed_teleimager_server.py"]
     assert neck.cmd[:2] == ["python3", "pc2/head_pose_receiver.py"] and "--yaw-limit-deg" in neck.cmd
-    assert "--ipc" in teleop.cmd and "192.168.123.164" in teleop.cmd and "run_teleop_with_neck.py" in teleop.cmd[1]
+    assert "192.168.123.164" in teleop.cmd and "run_teleop_with_neck.py" in teleop.cmd[1]
+
+
+def test_pty_child_sees_a_terminal_and_only_receives_keys_we_send(tmp_path):
+    """The legacy teleop reads the keyboard itself (sshkeyboard needs a tty): give it a pty, type only r/q."""
+    code = ("import os,sys,termios\n"
+            "print('isatty', os.isatty(0)); termios.tcgetattr(0)\n"            # what sshkeyboard needs
+            "import tty; tty.setcbreak(0)\n"                                 # like sshkeyboard: raw mode first
+            "print('READY', flush=True)\n"
+            "while True:\n"
+            "    k = os.read(0, 1).decode()\n"
+            "    print('key', k, flush=True)\n"
+            "    if k == 'q': break\n")
+    spec = ProcessSpec(name="legacy", cmd=[sys.executable, "-u", "-c", code], ready_text="READY", ready_timeout_s=10)
+    managed = ManagedProcess(spec, tmp_path, tty=True)
+    managed.start()
+    try:
+        assert managed.wait_ready()
+        assert managed.saw("isatty True")
+        assert managed.send_key("r") and managed.send_key("q")
+        deadline = time.monotonic() + 5
+        while not managed.saw("key q") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert managed.saw("key r") and managed.saw("key q")
+    finally:
+        managed.stop()
+    assert not managed.alive() and managed._master is None
+
+
+def test_child_without_tty_gets_no_input(tmp_path):
+    spec = ProcessSpec(name="plain", cmd=[sys.executable, "-u", "-c", "import os,sys; print('tty', os.isatty(0)); print('READY')"],
+                       ready_text="READY", ready_timeout_s=10)
+    managed = ManagedProcess(spec, tmp_path)
+    managed.start()
+    try:
+        assert managed.wait_ready() and managed.saw("tty False")
+        assert not managed.send_key("r")                       # no terminal: nothing can be typed
+    finally:
+        managed.stop()
+
+
+def test_r_types_into_the_teleop_terminal_once_and_q_on_shutdown(tmp_path):
+    from g1rec.orchestrator import Orchestrator
+    cfg = config_mod.from_dict({"dataset_root": str(tmp_path / "ds"), "raw_root": str(tmp_path / "raw"), "teleop_input": "pty",
+                                "processes": {"xr_teleop": {"cmd": [sys.executable, "-u", "-c",
+                                    "import os,tty\ntty.setcbreak(0)\nprint('Please enter the start signal', flush=True)\n"
+                                    "while True:\n    k=os.read(0,1).decode()\n    print('got',k,flush=True)\n"
+                                    "    if k=='r': print('start Tracking', flush=True)\n    if k=='q': break\n"],
+                                    "ready_text": "start signal", "ready_timeout_s": 10}}})
+    lines = []
+    orch = Orchestrator(cfg, None, out=lines.append)
+    orch.recorder.start = lambda: None
+    orch.recorder.wait_ready = lambda timeout: {"event": "ready", "problems": []}
+    orch.recorder.send = lambda cmd: None
+    orch.recorder.stop = lambda: None
+    assert orch.start_all()
+    teleop = orch.managed["xr_teleop"]
+    try:
+        assert orch._ensure_teleop_started()
+        assert orch._ensure_teleop_started()                    # second r: already following, nothing typed again
+        time.sleep(0.3)
+        assert [l for l in teleop.tail if l.startswith("got")].count("got r") == 1
+        assert teleop.saw("start Tracking") and not any("did not confirm" in l for l in lines)
+        orch.shutdown()
+        assert teleop.saw("got q")                              # the teleop's own quit key
+    finally:
+        teleop.stop()
+
+
+def test_teleop_input_validation_and_shipped_default():
+    import pytest
+    with pytest.raises(ValueError):
+        config_mod.from_dict({"teleop_input": "stdin"})
+    cfg = config_mod.load(str(ROOT / "config.yaml"))
+    assert cfg.teleop_input == "pty" and "--ipc" not in cfg.processes["xr_teleop"].cmd
