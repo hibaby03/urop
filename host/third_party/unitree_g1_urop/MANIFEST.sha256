@@ -5,6 +5,6 @@
 8a03eafb844035973e6aa0e6989395cc63505e3f1bccf9489683f3e1fafae133  ./host/neck_state_receiver.py
 301c2a823747d588f46b9264f0493d5fab87830f9db9dd456221f402b3306fad  ./host/neck_trace.py
 6f62570cb4fa979c21c0b6bc474337ae66bbd661da95499bf3e039d1a22918bd  ./host/requirements.txt
-0431e3bda0d6aae9bf096691c4afdf54e0ade1ad5651ffa34ced302b2294a762  ./host/run_teleop_with_neck.py
+54d99d226d7207aa16370c2be6ef2110cef0f51067aad7900dcb0915fe2b186b  ./host/run_teleop_with_neck.py
 a126791477b66045416b98b94742c3bffaf742dcb1343fcdcef52fea61a6c244  ./PROTOCOL.md
 2cb6df00e9298619702dd77d85861af260b6ff1df3b1358653d13da6ec8ac54e  ./README.md

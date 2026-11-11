@@ -285,6 +285,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not teleop_script.is_file():
         raise FileNotFoundError(f"teleop script not found: {teleop_script}")
 
+    # Importing TeleVuer below imports logging_mp loggers. Configure its
+    # process-wide logging before that happens; teleop_hand_and_arm.py also
+    # calls basicConfig when run directly, so it tolerates this prior setup.
+    import logging_mp
+    logging_mp.basicConfig(level=logging_mp.INFO)
+
     sys.path.insert(0, str(repository))
     import televuer  # Imported after the selected repository is on sys.path.
     from head_pose_udp import HeadPoseUdpSender, enabled, install_televuer_hook, send_televuer_pose
