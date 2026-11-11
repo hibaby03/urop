@@ -70,6 +70,6 @@ processes:
     cwd: ~/hckang/xr_teleoperate
     cmd: ["python", "{ROOT}/third_party/unitree_g1_urop/host/run_teleop_with_neck.py",
           --xr-repo, ~/hckang/xr_teleoperate, --neck-pose-ip, 192.168.123.164, --neck-pose-port, "5005",
-          --input-mode, hand, --arm=G1_29, --ee=dex3]
+          --arm=G1_29, --ee=dex3]
     ready_text: "Press [r] to start syncing|Please enter the start signal"   # alternatives separated by |
     ready_timeout_s: 120
