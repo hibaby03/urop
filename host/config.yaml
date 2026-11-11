@@ -1,0 +1,76 @@
+# g1rec configuration. Every value here is something the existing programs already use;
+# nothing is hard-wired in the code. Edit paths/addresses for your machines.
+
+fps: 30
+task: "pick up cube."
+task_desc: "task description"
+dataset_root: recordings/master_dataset
+raw_root: recordings/raw
+repo_id: local/g1_master_dataset
+
+# Master dataset cameras. The active stereo pair is required. Optional: cam_left_wrist, cam_right_wrist
+# (only if the ZED server/teleimager config also streams them).
+cameras: [cam_left_active, cam_right_active]
+
+# Freshness limits (ms) for the as-of alignment. A tick whose stream is older is dropped, not filled.
+max_age_ms: {arm_state: 200, hand_state: 200, arm_cmd: 500, hand_cmd: 500, tactile: 500, neck: 500, image: 500}
+action_alignment: next      # first command published at/after the tick (UAF-style); "asof" = newest before
+
+dds:
+  domain: 0
+  interface: null           # e.g. enp3s0 (the Host NIC on the robot network). The Host must see the robot DDS.
+  motion_mode: false        # true if the official teleop runs with --motion (arm commands on rt/arm_sdk)
+
+images:
+  pc2_ip: 192.168.123.164        # same PC2 address as the existing code
+  clock_sync_port: 5007
+  fit: letterbox            # ZED eye (16:9) -> 480x640; or stretch
+
+neck:
+  bind: 0.0.0.0
+  port: 5006                # PC2 head_pose_receiver sends neck state here (only the recorder listens)
+
+# The Host-side files from unitree_g1_urop are bundled in third_party/unitree_g1_urop (verbatim copy, see VENDORED.md).
+# g1_urop_host: null = use that copy (set a path only to use another checkout's parsers).
+g1_urop_host: null
+xr_repo: ~/hckang/xr_teleoperate     # official xr_teleoperate checkout on the Host (not bundled: it is its own repo)
+
+# The orchestrator copies the sibling ../pc2 directory to PC2 (a NEW directory; existing PC2 files are untouched)
+# before starting the PC2 programs. If pc2/ is not next to host/ it is skipped (programs assumed on PC2 already).
+# Remove this block if you copy pc2/ to PC2 yourself or run the PC2 programs as `external`.
+pc2_sync:
+  ssh: 192.168.123.164                 # Host 192.168.123.7 -> PC2/Orin 192.168.123.164, as in the existing code
+  src: "{ROOT}/../pc2"          # {ROOT} = this host/ directory
+  dest: "~/g1rec_pc2/pc2"
+
+# Started in this order, stopped in reverse.
+processes:
+  # --- Active camera (PC2), started over ssh with the commands from unitree_g1_urop's README quick start.
+  # The ssh user comes from ~/.ssh/config (or your local user name); key-based login is required.
+  # Use `mode: external` instead if you start these on PC2 by hand.
+  active_camera_zed:
+    mode: launch
+    ssh: 192.168.123.164
+    cwd: "~/g1rec_pc2"
+    cmd: [python3, pc2/zed_teleimager_server.py]
+    ready_text: "[display] publishing"        # printed by zed_teleimager_server.py before it serves
+    ready_timeout_s: 90
+  active_camera_neck:
+    mode: launch
+    ssh: 192.168.123.164
+    cwd: "~/g1rec_pc2"
+    cmd: [python3, pc2/head_pose_receiver.py, --yaw-limit-deg, "15", --pitch-down-limit-deg, "15", --pitch-up-limit-deg, "15"]
+    ready_text: '"event":"listening"'          # first JSON line of head_pose_receiver.py
+    ready_timeout_s: 60
+
+  # --- Official xr_teleoperate, unmodified, started through the bundled launcher (it runs the installed
+  # teleop_hand_and_arm.py unchanged and only adds the head-pose UDP to the neck). --ipc makes the official
+  # script take r/q from the orchestrator instead of the keyboard (needs a version that has --ipc).
+  xr_teleop:
+    mode: launch
+    cwd: ~/hckang/xr_teleoperate
+    cmd: ["python", "{ROOT}/third_party/unitree_g1_urop/host/run_teleop_with_neck.py",
+          --xr-repo, ~/hckang/xr_teleoperate, --neck-pose-ip, 192.168.123.164, --neck-pose-port, "5005",
+          --input-mode, hand, --arm=G1_29, --ee=dex3, --ipc]
+    ready_text: "Press [r] to start syncing|Please enter the start signal"   # alternatives separated by |
+    ready_timeout_s: 120

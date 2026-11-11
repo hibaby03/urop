@@ -1,18 +1,6 @@
-# Python caches and local environments
-__pycache__/
-*.py[cod]
-.pytest_cache/
 .venv/
-venv/
-
-# Local backups and duplicate archives
-*.bak
-/host.zip
-/pc2.zip
-
-# Local credentials
-.env
-.env.*
-!.env.example
-*.pem
-*.key
+recordings/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
