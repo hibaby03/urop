@@ -35,28 +35,24 @@ neck:
 g1_urop_host: null
 xr_repo: ~/hckang/xr_teleoperate     # official xr_teleoperate checkout on the Host (not bundled: it is its own repo)
 
-# The orchestrator copies the sibling ../pc2 directory to PC2 (a NEW directory; existing PC2 files are untouched)
-# before starting the PC2 programs. If pc2/ is not next to host/ it is skipped (programs assumed on PC2 already).
-# Remove this block if you copy pc2/ to PC2 yourself or run the PC2 programs as `external`.
-pc2_sync:
-  ssh: 192.168.123.164                 # Host 192.168.123.7 -> PC2/Orin 192.168.123.164, as in the existing code
-  src: "{ROOT}/../pc2"          # {ROOT} = this host/ directory
-  dest: "~/g1rec_pc2/pc2"
+# PC2 programs are started BY HAND on PC2 (see ../pc2/README.md); main.py does not connect to PC2.
+# To let main.py copy ../pc2 to PC2 and start them over ssh instead (needs key-based ssh login to PC2):
+# set both active_camera_* to `mode: launch` and add
+#   pc2_sync: {ssh: 192.168.123.164, src: "{ROOT}/../pc2", dest: "~/g1rec_pc2/pc2"}
 
 # Started in this order, stopped in reverse.
 processes:
-  # --- Active camera (PC2), started over ssh with the commands from unitree_g1_urop's README quick start.
-  # The ssh user comes from ~/.ssh/config (or your local user name); key-based login is required.
-  # Use `mode: external` instead if you start these on PC2 by hand.
+  # --- Active camera (PC2). external = already running on PC2 (started by hand); main.py does not touch PC2.
+  # The ssh/cwd/cmd/ready_* lines are only used with `mode: launch` (commands = unitree_g1_urop README quick start).
   active_camera_zed:
-    mode: launch
+    mode: external
     ssh: 192.168.123.164
     cwd: "~/g1rec_pc2"
     cmd: [python3, pc2/zed_teleimager_server.py]
     ready_text: "[display] publishing"        # printed by zed_teleimager_server.py before it serves
     ready_timeout_s: 90
   active_camera_neck:
-    mode: launch
+    mode: external
     ssh: 192.168.123.164
     cwd: "~/g1rec_pc2"
     cmd: [python3, pc2/head_pose_receiver.py, --yaw-limit-deg, "15", --pitch-down-limit-deg, "15", --pitch-up-limit-deg, "15"]

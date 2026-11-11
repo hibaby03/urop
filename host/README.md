@@ -16,9 +16,9 @@ urop/
   pc2/    runs on PC2: verbatim PC2 programs (zed_teleimager_server.py, head_pose_receiver.py and what they import)
 ```
 
-Copy `host/` to the Host and `pc2/` to PC2 (or keep both side by side: the orchestrator then copies `pc2/` to
-`~/g1rec_pc2/pc2` on PC2 itself and starts the programs over ssh; the copy is skipped if `pc2/` is not next to
-`host/`). Hashes in `MANIFEST.sha256` (and `tests/test_vendor.py`) guarantee the copied files are unmodified.
+Copy `host/` to the Host and `pc2/` to PC2. **Start the PC2 programs by hand on PC2** (commands in `pc2/README.md`);
+`host/main.py` does not connect to PC2 by default. (Optional ssh auto-start: see the comments in `host/config.yaml`.)
+Hashes in `MANIFEST.sha256` (and `tests/test_vendor.py`) guarantee the copied files are unmodified.
 
 Not bundled, because they are separate installations and not code of this project: the official
 `xr_teleoperate` checkout (`xr_repo`), the Python packages (`teleimager`, `unitree_sdk2py`, `televuer`,

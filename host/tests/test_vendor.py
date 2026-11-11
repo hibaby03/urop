@@ -86,13 +86,34 @@ def test_shipped_config_points_at_the_bundled_files():
     assert cfg.g1_urop_host is None
     launcher = expand_root(cfg.processes["xr_teleop"].cmd[1])
     assert Path(launcher) == VENDOR / "host" / "run_teleop_with_neck.py" and Path(launcher).is_file()
-    assert Path(expand_root(cfg.pc2_sync["src"])).resolve() == PC2.resolve()
     for name in ("active_camera_zed", "active_camera_neck"):
         spec = cfg.processes[name]
-        assert spec.cwd == "~/g1rec_pc2" and spec.cmd[1].startswith("pc2/")
-        assert cfg.pc2_sync["dest"] == "~/g1rec_pc2/pc2" and spec.ssh == cfg.pc2_sync["ssh"]
+        assert spec.cmd[1].startswith("pc2/")                  # used only if switched to `mode: launch`
         if PC2.is_dir():
             assert (PC2 / spec.cmd[1].split("/", 1)[1]).is_file()
+
+
+def test_pc2_programs_are_started_by_hand_by_default():
+    """The shipped config never connects to PC2: no sync, active camera processes are `external`."""
+    cfg = config_mod.load(str(ROOT / "config.yaml"))
+    assert cfg.pc2_sync is None
+    assert cfg.processes["active_camera_zed"].mode == "external"
+    assert cfg.processes["active_camera_neck"].mode == "external"
+    assert cfg.processes["xr_teleop"].mode == "launch"          # the Host teleop is still started by main.py
+
+
+def test_default_start_does_not_run_ssh_or_rsync(tmp_path):
+    from g1rec.orchestrator import Orchestrator
+    cfg = config_mod.load(str(ROOT / "config.yaml"))
+    cfg.processes.pop("xr_teleop")                              # nothing to launch in this test
+    cfg.dataset_root, cfg.raw_root = str(tmp_path / "ds"), str(tmp_path / "raw")
+    lines = []
+    orch = Orchestrator(cfg, None, out=lines.append)
+    orch.recorder.start = lambda: None
+    orch.recorder.wait_ready = lambda timeout: {"event": "ready", "problems": []}
+    assert orch.start_all()
+    assert any("Active Camera Running (external)" in line for line in lines)
+    assert not any("PC2 programs copied" in line or "copying the PC2" in line for line in lines)
 
 
 def test_sync_commands_use_a_new_remote_directory_and_never_delete():
