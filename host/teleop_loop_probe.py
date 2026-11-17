@@ -309,6 +309,9 @@ def main():
 
     import logging_mp
     logging_mp.basicConfig(level=logging_mp.INFO)
+    # The imports below create loggers, so a later basicConfig() (the launcher and the teleop script
+    # both call it) would raise "Logging already started". It is already configured: make it a no-op.
+    logging_mp.basicConfig = lambda *args, **kwargs: None
     sys.path.insert(0, str(launcher_dir))
     sys.path.insert(0, str(repo))
     import televuer
