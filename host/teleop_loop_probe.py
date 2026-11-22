@@ -35,6 +35,8 @@ import numpy as np
 
 POSE_MOVE_M = 0.02      # wrist translation span (m) below this = "pose is constant"
 IK_MOVE_RAD = 0.02      # IK solution span (rad) below this = "IK output is constant"
+WRIST_JUMP_M = 0.03     # wrist moving more than this between two consecutive cycles counts as a jump
+IK_JUMP_RAD = 0.10      # IK joint target changing more than this between two consecutive solves = a jump
 
 
 class Stats:
@@ -45,12 +47,15 @@ class Stats:
         self.total = self._new()
         self.window = self._new()
         self.first_error = {}
+        self._prev_pos = None
+        self._prev_sol = None
 
     @staticmethod
     def _new():
         return {"td_calls": 0, "td_bad": 0, "td_lo": None, "td_hi": None,
                 "ik_calls": 0, "ik_exc": 0, "ik_nonfinite": 0, "ik_lo": None, "ik_hi": None, "ik_step_max": 0.0,
                 "ctrl_calls": 0, "ctrl_exc": 0, "ctrl_dev_max": 0.0,
+                "td_step_max": 0.0, "td_jumps": 0, "ik_jump_max": 0.0, "ik_jumps": 0,
                 "hand_calls": 0, "hand_zero_l": 0, "hand_zero_r": 0,
                 "hl_lo": None, "hl_hi": None, "hr_lo": None, "hr_hi": None}
 
@@ -64,16 +69,24 @@ class Stats:
 
     def td(self, left, right):
         with self.lock:
+            pos = None
+            if left is not None and right is not None:
+                candidate = np.concatenate([np.asarray(left, float)[:3, 3], np.asarray(right, float)[:3, 3]])
+                if np.isfinite(candidate).all() and candidate.any():
+                    pos = candidate
+            previous = self._prev_pos
             for d in self._each():
                 d["td_calls"] += 1
-                if left is None or right is None:
-                    d["td_bad"] += 1
-                    continue
-                pos = np.concatenate([np.asarray(left, float)[:3, 3], np.asarray(right, float)[:3, 3]])
-                if not np.isfinite(pos).all() or not pos.any():
+                if pos is None:
                     d["td_bad"] += 1
                     continue
                 self._range(d, "td_lo", "td_hi", pos)
+                if previous is not None:
+                    step = float(np.abs(pos - previous).max())
+                    d["td_step_max"] = max(d["td_step_max"], step)
+                    d["td_jumps"] += step > WRIST_JUMP_M
+            if pos is not None:
+                self._prev_pos = pos
 
     def hands(self, left, right):
         """Finger skeletons (25x3 each) that the teleop copies into the Dex3 input arrays."""
@@ -92,15 +105,23 @@ class Stats:
 
     def ik(self, current_q, sol_q):
         with self.lock:
+            sol = np.asarray(sol_q, float)
+            finite = bool(np.isfinite(sol).all())
+            previous = self._prev_sol
             for d in self._each():
                 d["ik_calls"] += 1
-                sol = np.asarray(sol_q, float)
-                if not np.isfinite(sol).all():
+                if not finite:
                     d["ik_nonfinite"] += 1
                     continue
                 self._range(d, "ik_lo", "ik_hi", sol)
+                if previous is not None and previous.shape == sol.shape:
+                    jump = float(np.abs(sol - previous).max())
+                    d["ik_jump_max"] = max(d["ik_jump_max"], jump)
+                    d["ik_jumps"] += jump > IK_JUMP_RAD
                 if current_q is not None:
                     d["ik_step_max"] = max(d["ik_step_max"], float(np.abs(sol - np.asarray(current_q, float)).max()))
+            if finite:
+                self._prev_sol = sol.copy()
 
     def ctrl(self, target, current):
         with self.lock:
@@ -171,6 +192,20 @@ def judge(total, first_error=None):
                         "reach/follow these poses (workspace, frame/offset, or IK stuck at a limit)."))
         elif ik >= IK_MOVE_RAD:
             out.append(("OK", f"IK targets change (span {ik:.2f} rad, largest step vs current {total['ik_step_max']:.2f} rad)."))
+    if total["td_calls"] > 1:
+        wrist_jumpy = total["td_jumps"] > 0
+        ik_jumpy = total["ik_jumps"] > 0
+        if wrist_jumpy:
+            out.append(("WARN", f"The wrist pose jumped more than {WRIST_JUMP_M * 100:.0f} cm between two consecutive cycles "
+                        f"{total['td_jumps']}x (largest step {total['td_step_max']:.3f} m): the Quest hand data itself is "
+                        "noisy or drops out, which makes the arms bounce."))
+        if ik_jumpy and not wrist_jumpy:
+            out.append(("WARN", f"The IK joint targets jumped more than {IK_JUMP_RAD:.2f} rad between two consecutive solves "
+                        f"{total['ik_jumps']}x (largest {total['ik_jump_max']:.3f} rad) while the wrist poses were smooth: "
+                        "IK is switching between solutions, which makes the arms bounce."))
+        if not wrist_jumpy and not ik_jumpy:
+            out.append(("OK", "Wrist poses and IK targets are both smooth between consecutive cycles "
+                        f"(largest steps {total['td_step_max']:.3f} m / {total['ik_jump_max']:.3f} rad)."))
     if total["ctrl_exc"]:
         out.append(("FAIL", f"ctrl_dual_arm() raised {total['ctrl_exc']}x; first: {first_error.get('ctrl')}"))
     elif total["ik_calls"] and total["ctrl_calls"] == 0:
@@ -188,8 +223,8 @@ def format_window(w, elapsed):
     hand = (f"hand span L={span(w['hl_lo'], w['hl_hi']):.3f}m R={span(w['hr_lo'], w['hr_hi']):.3f}m "
             f"zero L/R={w['hand_zero_l']}/{w['hand_zero_r']} | ") if w.get("hand_calls") else ""
     return (f"[loop] t={elapsed:4.0f}s cycles/s={w['td_calls']} bad_pose={w['td_bad']} | "
-            f"wrist span L+R={span(w['td_lo'], w['td_hi']):.3f}m | {hand}"
-            f"IK calls={w['ik_calls']} exc={w['ik_exc']} nan={w['ik_nonfinite']} span={span(w['ik_lo'], w['ik_hi']):.3f}rad "
+            f"wrist span L+R={span(w['td_lo'], w['td_hi']):.3f}m step<={w['td_step_max']:.3f}m jumps={w['td_jumps']} | {hand}"
+            f"IK calls={w['ik_calls']} exc={w['ik_exc']} nan={w['ik_nonfinite']} span={span(w['ik_lo'], w['ik_hi']):.3f}rad step<={w['ik_jump_max']:.3f}rad jumps={w['ik_jumps']} "
             f"| ctrl calls={w['ctrl_calls']} max|tgt-cur|={w['ctrl_dev_max']:.2f}rad")
 
 
