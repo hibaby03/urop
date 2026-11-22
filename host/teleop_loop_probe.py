@@ -18,6 +18,9 @@ printed at exit:
         --xr-repo ~/hckang/xr_teleoperate --neck-pose-ip 192.168.123.164 \
         --neck-pose-port 5005 --arm=G1_29
 
+    # add --fake-right-hand when the right Dex3 hand publishes no state (the controller would wait forever):
+    #   same patch as run_teleop_fake_right_hand.py, so the loop above can be observed at all.
+
     python3 teleop_loop_probe.py --selftest      # verdict logic only, no robot
 """
 from __future__ import annotations
@@ -296,6 +299,8 @@ def main():
         print(f"ERROR: launcher not found in {launcher_dir}")
         return 2
     argv = sys.argv[1:]
+    fake_right = "--fake-right-hand" in argv
+    argv = [a for a in argv if a != "--fake-right-hand"]
     repo = None
     for i, a in enumerate(argv):
         if a == "--xr-repo" and i + 1 < len(argv):
@@ -317,6 +322,17 @@ def main():
     import televuer
     from teleop.robot_control.robot_arm import G1_29_ArmController
     from teleop.robot_control.robot_arm_ik import G1_29_ArmIK
+
+    if fake_right:
+        import run_teleop_fake_right_hand as stub_module
+        import teleop.robot_control.robot_hand_unitree as hand_module
+        problem = stub_module.check_shape(hand_module.Dex3_1_Controller)
+        if problem:
+            print(f"ERROR: {problem}", flush=True)
+            return 2
+        hand_module.Dex3_1_Controller = stub_module.make_stub(
+            hand_module.Dex3_1_Controller, stub_module.DEFAULT_FAKE_Q, log=lambda msg: print(msg, flush=True))
+        print("[loop-probe] right Dex3 hand state is faked (--fake-right-hand)", flush=True)
 
     stats = Stats()
     install_hooks(stats, televuer.TeleVuerWrapper, G1_29_ArmIK, G1_29_ArmController)
