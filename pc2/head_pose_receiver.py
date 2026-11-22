@@ -108,9 +108,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--bind", default="0.0.0.0", help="local address to bind")
     parser.add_argument("--port", type=int, default=5005, help="UDP port")
-    parser.add_argument("--yaw-limit-deg", type=positive_float, default=80.0)
-    parser.add_argument("--pitch-down-limit-deg", type=positive_float, default=35.0)
-    parser.add_argument("--pitch-up-limit-deg", type=positive_float, default=45.0)
+    # No angle limit by default. Pass a value to limit that axis (e.g. --yaw-limit-deg 15).
+    parser.add_argument("--yaw-limit-deg", type=positive_float, default=None)
+    parser.add_argument("--pitch-down-limit-deg", type=positive_float, default=None)
+    parser.add_argument("--pitch-up-limit-deg", type=positive_float, default=None)
     parser.add_argument(
         "--smoothing",
         type=smoothing_float,

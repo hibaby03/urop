@@ -186,14 +186,15 @@ class TwoDofPoseMapper:
 
     def __init__(
         self,
-        yaw_limit_deg: float = 80.0,
-        pitch_down_limit_deg: float = 35.0,
-        pitch_up_limit_deg: float = 45.0,
+        yaw_limit_deg: Optional[float] = 80.0,
+        pitch_down_limit_deg: Optional[float] = 35.0,
+        pitch_up_limit_deg: Optional[float] = 45.0,
         smoothing: float = 1.0,
     ) -> None:
-        if yaw_limit_deg <= 0:
+        # None = no angle limit on that axis (only the motor's 0..4095 position range still applies).
+        if yaw_limit_deg is not None and yaw_limit_deg <= 0:
             raise ValueError("yaw_limit_deg must be positive")
-        if pitch_down_limit_deg <= 0 or pitch_up_limit_deg <= 0:
+        if any(limit is not None and limit <= 0 for limit in (pitch_down_limit_deg, pitch_up_limit_deg)):
             raise ValueError("pitch limits must be positive")
         if not 0.0 < smoothing <= 1.0:
             raise ValueError("smoothing must be in (0, 1]")
@@ -224,11 +225,12 @@ class TwoDofPoseMapper:
         yaw = math.degrees(yaw_rad)
         pitch = math.degrees(pitch_rad)
 
-        yaw = max(-self.yaw_limit_deg, min(self.yaw_limit_deg, yaw))
-        pitch = max(
-            -self.pitch_down_limit_deg,
-            min(self.pitch_up_limit_deg, pitch),
-        )
+        if self.yaw_limit_deg is not None:
+            yaw = max(-self.yaw_limit_deg, min(self.yaw_limit_deg, yaw))
+        if self.pitch_down_limit_deg is not None:
+            pitch = max(-self.pitch_down_limit_deg, pitch)
+        if self.pitch_up_limit_deg is not None:
+            pitch = min(self.pitch_up_limit_deg, pitch)
 
         if self._filtered_yaw is None or self._filtered_pitch is None:
             self._filtered_yaw = yaw
