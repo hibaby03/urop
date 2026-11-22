@@ -53,7 +53,39 @@ def make_stub(base, fake_q=DEFAULT_FAKE_Q, log=print):
             if event is not None:
                 event.set()
                 log("[right-stub] _right_hand_state_received set (the controller's start-up wait is released)")
-            return super()._subscribe_hand_state()
+            self._start_wait_report(log)
+            try:
+                return super()._subscribe_hand_state()
+            except BaseException as error:  # the reader thread would otherwise die without a trace
+                log(f"[right-stub] original reader thread raised {type(error).__name__}: {error}")
+                raise
+
+        def _start_wait_report(self, log):
+            """Once a second until the start-up wait is released: which side is still missing."""
+            import threading
+            import time
+
+            def report():
+                waited = 0
+                while waited < 600:
+                    left = getattr(self, "_left_hand_state_received", None)
+                    right = getattr(self, "_right_hand_state_received", None)
+                    left_set = left.is_set() if left is not None else None
+                    right_set = right.is_set() if right is not None else None
+                    if left_set and right_set:
+                        log("[right-stub] both state events are set; start-up wait is over")
+                        return
+                    try:
+                        left_q = list(self.left_hand_state_array[:])
+                        right_q = list(self.right_hand_state_array[:])
+                    except Exception:  # noqa: BLE001
+                        left_q = right_q = "?"
+                    log(f"[right-stub] still waiting: left_received={left_set} right_received={right_set} "
+                        f"left_q={left_q} right_q={right_q}")
+                    time.sleep(1.0)
+                    waited += 1
+
+            threading.Thread(target=report, daemon=True).start()
 
     RightHandStateStub.__name__ = base.__name__
     RightHandStateStub.__qualname__ = base.__qualname__
