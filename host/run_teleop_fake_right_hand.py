@@ -3,13 +3,14 @@
 STATE pinned to a fixed value, so Dex3_1_Controller no longer blocks at start-up waiting for
 `rt/dex3/right/state`. The teleop script and the xr_teleoperate repo are not modified.
 
-Why: Dex3_1_Controller.__init__ waits until BOTH hands' state arrays are non-zero
-("[Dex3_1_Controller] Waiting to subscribe dds..."). With no right-hand state it waits forever,
+Why: Dex3_1_Controller.__init__ waits until BOTH hands' "state received" Events are set
+("[Dex3_1_Controller] Waiting to subscribe dds..."; older versions: both state arrays non-zero).
+With no right-hand state it waits forever,
 so the teleop never reaches its start prompt and the arms never follow.
 
 What this does (in this process only):
   * subclasses Dex3_1_Controller; its state-reader thread first writes a small non-zero constant into
-    right_hand_state_array, then runs the original reader. If a real right-hand state ever arrives
+    right_hand_state_array and sets _right_hand_state_received, then runs the original reader. If a real right-hand state ever arrives
     it simply overwrites the constant.
 Consequences:
   * left hand + arms work normally.
@@ -47,6 +48,11 @@ def make_stub(base, fake_q=DEFAULT_FAKE_Q, log=print):
                 log(f"[right-stub] right_hand_state_array pinned to {fake_q} (no real right-hand state needed)")
             except Exception as error:  # noqa: BLE001
                 log(f"[right-stub] could not pin the right-hand state: {type(error).__name__}: {error}")
+            # Newer controllers wait on a "received" Event instead of a non-zero array.
+            event = getattr(self, "_right_hand_state_received", None)
+            if event is not None:
+                event.set()
+                log("[right-stub] _right_hand_state_received set (the controller's start-up wait is released)")
             return super()._subscribe_hand_state()
 
     RightHandStateStub.__name__ = base.__name__
@@ -60,7 +66,8 @@ def check_shape(cls):
         source = inspect.getsource(cls)
     except (OSError, TypeError) as error:
         return f"cannot read the source of {cls}: {error}"
-    missing = [name for name in ("_subscribe_hand_state", "right_hand_state_array") if name not in source]
+    missing = [name for name in ("_subscribe_hand_state", "right_hand_state_array", "_right_hand_state_received")
+               if name not in source]
     if missing:
         return f"expected names not found in Dex3_1_Controller: {missing}"
     return None
@@ -78,9 +85,11 @@ def selftest():
             self.right_arrives = right_arrives
             self.left_hand_state_array = Array("d", 7)
             self.right_hand_state_array = Array("d", 7)
+            self._left_hand_state_received = threading.Event()
+            self._right_hand_state_received = threading.Event()
             threading.Thread(target=self._subscribe_hand_state, daemon=True).start()
             for _ in range(300):
-                if any(self.left_hand_state_array) and any(self.right_hand_state_array):
+                if self._left_hand_state_received.is_set() and self._right_hand_state_received.is_set():
                     return
                 time.sleep(0.01)
             raise TimeoutError("still waiting for both hand states")
@@ -88,9 +97,11 @@ def selftest():
         def _subscribe_hand_state(self):
             for _ in range(2000):
                 self.left_hand_state_array[0] = 0.5
+                self._left_hand_state_received.set()
                 if self.right_arrives:
                     time.sleep(0.2)
                     self.right_hand_state_array[0] = 0.9
+                    self._right_hand_state_received.set()
                 time.sleep(0.005)
 
     results = []
