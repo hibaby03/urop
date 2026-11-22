@@ -147,6 +147,22 @@ def check_shape(cls):
     return None
 
 
+def run_and_report_swallowed(main_callable, argv):
+    """Run the launcher; if the teleop ends through its own `finally: exit(0)`, print the exception that
+    exit(0) replaced. Without this, an error inside the follow loop leaves no traceback at all."""
+    import traceback
+    try:
+        return main_callable(argv)
+    except SystemExit as stop:
+        swallowed = stop.__context__
+        if swallowed is not None and not isinstance(swallowed, KeyboardInterrupt):
+            print("\n[swallowed-exception] the teleop stopped because of this error (its finally: exit(0) hid it):",
+                  file=sys.stderr, flush=True)
+            traceback.print_exception(type(swallowed), swallowed, swallowed.__traceback__)
+            sys.stderr.flush()
+        raise
+
+
 # --------------------------------------------------------------------------- self-test (no SDK)
 
 def selftest():
@@ -254,6 +270,38 @@ def selftest():
     except TimeoutError:
         case("independent readers start despite a silent right topic", False)
 
+    import io
+    import contextlib
+
+    def teleop_like(_argv):               # a loop error followed by `finally: exit(0)` like teleop_hand_and_arm.py
+        try:
+            raise ValueError("boom in the follow loop")
+        finally:
+            exit(0)
+
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        try:
+            run_and_report_swallowed(teleop_like, [])
+        except SystemExit:
+            pass
+    case("an error hidden by the teleop's exit(0) is printed",
+         "boom in the follow loop" in captured.getvalue() and "swallowed-exception" in captured.getvalue())
+
+    def clean_exit(_argv):
+        try:
+            pass
+        finally:
+            exit(0)
+
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        try:
+            run_and_report_swallowed(clean_exit, [])
+        except SystemExit:
+            pass
+    case("a normal exit prints nothing", captured.getvalue() == "")
+
     class Different:
         def __init__(self): pass
     case("shape check rejects a different layout", check_shape(Different) is not None)
@@ -320,7 +368,7 @@ def main():
     print(f"[right-stub] Dex3_1_Controller patched (fake right state {fake_q}); real teleop starts now.", flush=True)
 
     import run_teleop_with_neck as launcher
-    return launcher.main(argv)
+    return run_and_report_swallowed(launcher.main, argv)
 
 
 if __name__ == "__main__":
