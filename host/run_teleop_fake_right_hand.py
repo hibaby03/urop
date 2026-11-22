@@ -24,6 +24,8 @@ Usage (replaces run_teleop_with_neck.py; kill stale teleop/Vuer processes first,
         --xr-repo ~/hckang/xr_teleoperate --neck-pose-ip 192.168.123.164 \
         --neck-pose-port 5005 --arm=G1_29 --ee=dex3 [--fake-right-q 0.001]
 
+    --headless is added automatically (the teleop skips its cv2 window, which fails on an OpenCV without GUI).
+
     python3 run_teleop_fake_right_hand.py --selftest      # checks the patch mechanism, no robot
 """
 from __future__ import annotations
@@ -145,6 +147,11 @@ def check_shape(cls):
     if missing:
         return f"expected names not found in Dex3_1_Controller: {missing}"
     return None
+
+
+def with_default_headless(argv):
+    """The teleop script's --headless is on unless it is already given (no cv2 window; Quest video is unaffected)."""
+    return list(argv) if "--headless" in argv else list(argv) + ["--headless"]
 
 
 def run_and_report_swallowed(main_callable, argv):
@@ -302,6 +309,9 @@ def selftest():
             pass
     case("a normal exit prints nothing", captured.getvalue() == "")
 
+    case("--headless is added when missing", with_default_headless(["--ee=dex3"]) == ["--ee=dex3", "--headless"])
+    case("--headless is not duplicated", with_default_headless(["--headless", "--ee=dex3"]) == ["--headless", "--ee=dex3"])
+
     class Different:
         def __init__(self): pass
     case("shape check rejects a different layout", check_shape(Different) is not None)
@@ -366,6 +376,8 @@ def main():
         left_index=getattr(hand_module, "Dex3_1_Left_JointIndex", None),
         right_index=getattr(hand_module, "Dex3_1_Right_JointIndex", None))
     print(f"[right-stub] Dex3_1_Controller patched (fake right state {fake_q}); real teleop starts now.", flush=True)
+
+    argv = with_default_headless(argv)
 
     import run_teleop_with_neck as launcher
     return run_and_report_swallowed(launcher.main, argv)
