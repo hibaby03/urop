@@ -161,6 +161,25 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_false",
         help="monitor-only: do not enable torque or write goals",
     )
+    motor.add_argument(
+        "--center-on-start",
+        dest="center_on_start",
+        action="store_true",
+        default=True,
+        help="on start, drive the neck to --yaw-center/--pitch-center (2048/2048) before any pose arrives (default)",
+    )
+    motor.add_argument(
+        "--no-center-on-start",
+        dest="center_on_start",
+        action="store_false",
+        help="hold the neck wherever it is at start instead",
+    )
+    motor.add_argument(
+        "--start-profile-velocity",
+        type=int,
+        default=60,
+        help="profile velocity used only for the first move to the center (default 60, slower than normal)",
+    )
     motor.add_argument("--dxl-device", default="/dev/ttyUSB0")
     motor.add_argument("--dxl-baudrate", type=int, default=57600)
     motor.add_argument("--yaw-id", type=int, default=5)
@@ -213,6 +232,8 @@ def run(args: argparse.Namespace) -> int:
             pitch_sign=args.pitch_sign,
             profile_velocity=args.profile_velocity,
             profile_acceleration=args.profile_acceleration,
+            center_on_start=args.center_on_start,
+            start_profile_velocity=args.start_profile_velocity,
         )
         neck = DynamixelNeck(configuration)
         neck.connect()

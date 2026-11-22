@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -73,6 +74,12 @@ class NeckConfiguration:
     pitch_sign: int = 1
     profile_velocity: int = 180
     profile_acceleration: int = 60
+    # True: on connect, drive both axes to yaw_center/pitch_center (2048/2048 by default) instead of holding
+    # wherever the neck happens to be. The move uses the slower start_profile_velocity, then the normal one.
+    center_on_start: bool = False
+    start_profile_velocity: int = 60
+    center_tolerance: int = 40          # counts; "arrived" when both axes are this close to the center
+    center_timeout_s: float = 4.0
 
 
 class DynamixelNeck:
@@ -96,6 +103,8 @@ class DynamixelNeck:
             raise ValueError("profile_velocity cannot be negative")
         if configuration.profile_acceleration < 0:
             raise ValueError("profile_acceleration cannot be negative")
+        if configuration.start_profile_velocity < 0:
+            raise ValueError("start_profile_velocity cannot be negative")
 
         if sdk_module is None:
             try:
@@ -164,19 +173,43 @@ class DynamixelNeck:
             # off) so that enabling torque does not snap the neck to a stale
             # goal register value, and so it actively holds instead of sagging
             # under gravity before the first Quest pose arrives.
-            yaw_present, pitch_present = self.read_present_positions()
-            for motor_id, present in (
-                (self.configuration.yaw_id, yaw_present),
-                (self.configuration.pitch_id, pitch_present),
-            ):
-                self._write4(motor_id, ADDR_GOAL_POSITION, present & 0xFFFFFFFF)
+            configuration = self.configuration
+            if configuration.center_on_start:
+                goals = (
+                    max(MIN_POSITION, min(MAX_POSITION, configuration.yaw_center)),
+                    max(MIN_POSITION, min(MAX_POSITION, configuration.pitch_center)),
+                )
+                # Slow, bounded first move to the center position.
+                for motor_id in self._motor_ids:
+                    self._write4(motor_id, ADDR_PROFILE_VELOCITY, configuration.start_profile_velocity)
+            else:
+                goals = self.read_present_positions()
+            for motor_id, goal in zip(self._motor_ids, goals):
+                self._write4(motor_id, ADDR_GOAL_POSITION, goal & 0xFFFFFFFF)
 
             for motor_id in self._motor_ids:
                 self._write1(motor_id, ADDR_TORQUE_ENABLE, TORQUE_ENABLE)
             self._torque_enabled = True
+
+            if configuration.center_on_start:
+                self._wait_until_near(goals)
+                for motor_id in self._motor_ids:
+                    self._write4(motor_id, ADDR_PROFILE_VELOCITY, configuration.profile_velocity)
         except Exception:
             self.close()
             raise
+
+    def _wait_until_near(self, goals: Tuple[int, int]) -> None:
+        """Block until both axes are within center_tolerance of goals (or center_timeout_s passes)."""
+
+        deadline = time.monotonic() + self.configuration.center_timeout_s
+        while True:
+            present = self.read_present_positions()
+            if all(abs(p - g) <= self.configuration.center_tolerance for p, g in zip(present, goals)):
+                return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.05)
 
     def write_angles(self, yaw_deg: float, pitch_deg: float) -> Tuple[int, int]:
         if not self._connected or not self._torque_enabled:
