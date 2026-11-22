@@ -57,7 +57,8 @@ class Stats:
                 "ctrl_calls": 0, "ctrl_exc": 0, "ctrl_dev_max": 0.0,
                 "td_step_max": 0.0, "td_jumps": 0, "ik_jump_max": 0.0, "ik_jumps": 0,
                 "hand_calls": 0, "hand_zero_l": 0, "hand_zero_r": 0,
-                "hl_lo": None, "hl_hi": None, "hr_lo": None, "hr_hi": None}
+                "hl_lo": None, "hl_hi": None, "hr_lo": None, "hr_hi": None,
+                "t_td": 0.0, "t_ik": 0.0, "t_ctrl": 0.0, "t_gap": 0.0}
 
     @staticmethod
     def _range(d, lo, hi, v):
@@ -129,6 +130,11 @@ class Stats:
                 d["ctrl_calls"] += 1
                 if current is not None:
                     d["ctrl_dev_max"] = max(d["ctrl_dev_max"], float(np.abs(np.asarray(target, float) - np.asarray(current, float)).max()))
+
+    def timing(self, key, seconds):
+        with self.lock:
+            for d in self._each():
+                d[key] = max(d[key], seconds)
 
     def exception(self, kind, error):
         with self.lock:
@@ -276,7 +282,8 @@ def format_window(w, elapsed):
     return (f"[loop] t={elapsed:4.0f}s cycles/s={w['td_calls']} bad_pose={w['td_bad']} | "
             f"wrist span L+R={span(w['td_lo'], w['td_hi']):.3f}m step<={w['td_step_max']:.3f}m jumps={w['td_jumps']} | {hand}"
             f"IK calls={w['ik_calls']} exc={w['ik_exc']} nan={w['ik_nonfinite']} span={span(w['ik_lo'], w['ik_hi']):.3f}rad step<={w['ik_jump_max']:.3f}rad jumps={w['ik_jumps']} "
-            f"| ctrl calls={w['ctrl_calls']} max|tgt-cur|={w['ctrl_dev_max']:.2f}rad")
+            f"| ctrl calls={w['ctrl_calls']} max|tgt-cur|={w['ctrl_dev_max']:.2f}rad | "
+            f"slowest ms: motion_input={w['t_td'] * 1000:.0f} IK={w['t_ik'] * 1000:.0f} ctrl={w['t_ctrl'] * 1000:.0f} loop_gap={w['t_gap'] * 1000:.0f}")
 
 
 def install_hooks(stats, wrapper_cls, ik_cls, ctrl_cls):
@@ -285,8 +292,15 @@ def install_hooks(stats, wrapper_cls, ik_cls, ctrl_cls):
     original_ik = ik_cls.solve_ik
     original_ctrl = ctrl_cls.ctrl_dual_arm
 
+    last_td_start = [None]
+
     def get_motion_state_data(self, *args, **kwargs):
+        began = time.monotonic()
+        if last_td_start[0] is not None:
+            stats.timing("t_gap", began - last_td_start[0])
+        last_td_start[0] = began
         data = original_td(self, *args, **kwargs)
+        stats.timing("t_td", time.monotonic() - began)
         try:
             stats.td(getattr(data, "left_arm_pose", None), getattr(data, "right_arm_pose", None))
             if hasattr(data, "left_hand_pos") or hasattr(data, "right_hand_pos"):
@@ -296,8 +310,10 @@ def install_hooks(stats, wrapper_cls, ik_cls, ctrl_cls):
         return data
 
     def solve_ik(self, left, right, current_q=None, current_dq=None, *args, **kwargs):
+        began = time.monotonic()
         try:
             result = original_ik(self, left, right, current_q, current_dq, *args, **kwargs)
+            stats.timing("t_ik", time.monotonic() - began)
         except Exception as error:  # noqa: BLE001
             stats.exception("ik", error)
             raise
@@ -316,11 +332,14 @@ def install_hooks(stats, wrapper_cls, ik_cls, ctrl_cls):
             stats.ctrl(q_target, current)
         except Exception:  # noqa: BLE001
             pass
+        began = time.monotonic()
         try:
             return original_ctrl(self, q_target, tauff_target, *args, **kwargs)
         except Exception as error:  # noqa: BLE001
             stats.exception("ctrl", error)
             raise
+        finally:
+            stats.timing("t_ctrl", time.monotonic() - began)
 
     wrapper_cls.get_motion_state_data = get_motion_state_data
     ik_cls.solve_ik = solve_ik
