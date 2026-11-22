@@ -113,6 +113,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--pitch-down-limit-deg", type=positive_float, default=None)
     parser.add_argument("--pitch-up-limit-deg", type=positive_float, default=None)
     parser.add_argument(
+        "--neutral-mode",
+        choices=("level", "first"),
+        default="level",
+        help="level (default): only the heading of the first/recenter sample is the neutral, pitch is measured "
+        "from the horizon (a tilted headset at start cannot couple pitch into yaw). "
+        "first: the whole orientation of the first sample (previous behaviour).",
+    )
+    parser.add_argument(
         "--smoothing",
         type=smoothing_float,
         default=1.0,
@@ -218,6 +226,7 @@ def run(args: argparse.Namespace) -> int:
         pitch_down_limit_deg=args.pitch_down_limit_deg,
         pitch_up_limit_deg=args.pitch_up_limit_deg,
         smoothing=args.smoothing,
+        neutral_mode=args.neutral_mode,
     )
 
     neck: Optional[DynamixelNeck] = None

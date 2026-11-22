@@ -159,6 +159,24 @@ def relative_orientation(neutral: Quaternion, current: Quaternion) -> Quaternion
     )
 
 
+def level_neutral(orientation: Quaternion) -> Quaternion:
+    """Keep only the heading (yaw) of an orientation: a rotation about the vertical (+Y) axis.
+
+    The OpenXR world is gravity-aligned, so a heading-only neutral makes pitch the true angle above/below
+    the horizon and removes any roll/tilt the headset had when the neutral was captured. Without this a
+    tilted first sample makes a pure nod show up as yaw as well.
+    """
+
+    x, y, z, w = normalize_quaternion(orientation)
+    forward_x = -2.0 * (x * z + y * w)
+    forward_z = -(1.0 - 2.0 * (x * x + y * y))
+    if math.hypot(forward_x, forward_z) < 1e-6:      # looking straight up/down: heading undefined
+        return (0.0, 0.0, 0.0, 1.0)
+    heading = math.atan2(forward_x, -forward_z)       # same yaw convention as quaternion_to_yaw_pitch
+    half = -heading / 2.0                             # rotation about +Y by -heading turns -Z toward +heading
+    return (0.0, math.sin(half), 0.0, math.cos(half))
+
+
 def quaternion_to_yaw_pitch(q: Quaternion) -> Tuple[float, float]:
     """Convert a relative OpenXR quaternion to right-positive yaw/up-positive pitch.
 
@@ -190,7 +208,13 @@ class TwoDofPoseMapper:
         pitch_down_limit_deg: Optional[float] = 35.0,
         pitch_up_limit_deg: Optional[float] = 45.0,
         smoothing: float = 1.0,
+        neutral_mode: str = "first",
     ) -> None:
+        # neutral_mode: "first" = the whole orientation of the first sample is the neutral (original behaviour);
+        #               "level" = only its heading is, pitch/roll are taken from gravity (see level_neutral).
+        if neutral_mode not in ("first", "level"):
+            raise ValueError("neutral_mode must be 'first' or 'level'")
+        self.neutral_mode = neutral_mode
         # None = no angle limit on that axis (only the motor's 0..4095 position range still applies).
         if yaw_limit_deg is not None and yaw_limit_deg <= 0:
             raise ValueError("yaw_limit_deg must be positive")
@@ -208,9 +232,15 @@ class TwoDofPoseMapper:
         self._filtered_pitch: Optional[float] = None
 
     def recenter(self, orientation: Quaternion) -> None:
-        self.neutral = normalize_quaternion(orientation)
-        self._filtered_yaw = 0.0
-        self._filtered_pitch = 0.0
+        if self.neutral_mode == "level":
+            self.neutral = level_neutral(orientation)
+            # The first sample is not necessarily level, so do not seed the smoothing filter with zero.
+            self._filtered_yaw = None
+            self._filtered_pitch = None
+        else:
+            self.neutral = normalize_quaternion(orientation)
+            self._filtered_yaw = 0.0
+            self._filtered_pitch = 0.0
 
     def update(self, packet: HeadPosePacket) -> Optional[YawPitchTarget]:
         if not packet.orientation_valid or not packet.tracked:
