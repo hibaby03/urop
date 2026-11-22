@@ -147,6 +147,25 @@ def span(lo, hi):
     return 0.0 if lo is None else float(np.max(hi - lo))
 
 
+ARM_JOINTS = ("ShPitch", "ShRoll", "ShYaw", "Elbow", "WrRoll", "WrPitch", "WrYaw")
+
+
+def axis_spans(lo, hi):
+    """Per-axis ranges: wrist -> {'L': (x, y, z), 'R': (x, y, z)} in metres; None when nothing was seen."""
+    if lo is None:
+        return None
+    d = (np.asarray(hi) - np.asarray(lo)).astype(float)
+    return {"L": tuple(d[0:3]), "R": tuple(d[3:6])}
+
+
+def joint_spans(lo, hi):
+    """IK joint ranges, left arm then right arm (7 each, radians); None when nothing was seen."""
+    if lo is None:
+        return None
+    d = (np.asarray(hi) - np.asarray(lo)).astype(float)
+    return {"L": tuple(d[0:7]), "R": tuple(d[7:14])} if d.shape[0] >= 14 else None
+
+
 def judge(total, first_error=None):
     out = []
     first_error = first_error or {}
@@ -192,6 +211,22 @@ def judge(total, first_error=None):
                         "reach/follow these poses (workspace, frame/offset, or IK stuck at a limit)."))
         elif ik >= IK_MOVE_RAD:
             out.append(("OK", f"IK targets change (span {ik:.2f} rad, largest step vs current {total['ik_step_max']:.2f} rad)."))
+    wrist_axes = axis_spans(total["td_lo"], total["td_hi"])
+    if wrist_axes:
+        for side in ("L", "R"):
+            x, y, z = wrist_axes[side]
+            if z >= 0.05 and max(x, y) < 0.3 * z:
+                out.append(("WARN", f"The {side} wrist target moves almost only vertically (x {x:.2f}, y {y:.2f}, z {z:.2f} m): "
+                            "the hand data reaching the teleop has little forward/sideways motion."))
+    joint_ranges = joint_spans(total["ik_lo"], total["ik_hi"])
+    if joint_ranges:
+        for side in ("L", "R"):
+            spans = np.array(joint_ranges[side])
+            order = np.argsort(spans)[::-1]
+            top, second = spans[order[0]], spans[order[1]]
+            if top >= 0.15 and second < 0.3 * top:
+                out.append(("WARN", f"On the {side} arm the IK moves almost only {ARM_JOINTS[order[0]]} "
+                            f"({top:.2f} rad; next largest {second:.2f}): the arm swings in one plane instead of following the hand."))
     if total["td_calls"] > 1:
         wrist_jumpy = total["td_jumps"] > 0
         ik_jumpy = total["ik_jumps"] > 0
@@ -214,6 +249,22 @@ def judge(total, first_error=None):
         out.append(("OK", f"ctrl_dual_arm() sends targets (largest |target - current| {total['ctrl_dev_max']:.2f} rad). "
                     "If all of the above is OK but the robot still stays put, check the robot side with "
                     "teleop_chain_probe.py running alongside."))
+    return out
+
+
+def _fmt(values, digits=2):
+    return "(" + ",".join(f"{v:.{digits}f}" for v in values) + ")"
+
+
+def format_axes(w):
+    wrist = axis_spans(w["td_lo"], w["td_hi"])
+    joints = joint_spans(w["ik_lo"], w["ik_hi"])
+    out = ""
+    if wrist:
+        out += f"\n       wrist xyz span L={_fmt(wrist['L'])} R={_fmt(wrist['R'])} m"
+    if joints:
+        out += (f"\n       IK joint span (ShPitch,ShRoll,ShYaw,Elbow,WrRoll,WrPitch,WrYaw) "
+                f"L={_fmt(joints['L'])} R={_fmt(joints['R'])} rad")
     return out
 
 
@@ -282,7 +333,8 @@ def start_reporter(stats):
     def run():
         while True:
             time.sleep(1.0)
-            print(format_window(stats.take_window(), time.monotonic() - start), flush=True)
+            window = stats.take_window()
+            print(format_window(window, time.monotonic() - start) + format_axes(window), flush=True)
 
     threading.Thread(target=run, name="loop-probe-report", daemon=True).start()
 
