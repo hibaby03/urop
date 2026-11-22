@@ -331,7 +331,9 @@ def main():
             print(f"ERROR: {problem}", flush=True)
             return 2
         hand_module.Dex3_1_Controller = stub_module.make_stub(
-            hand_module.Dex3_1_Controller, stub_module.DEFAULT_FAKE_Q, log=lambda msg: print(msg, flush=True))
+            hand_module.Dex3_1_Controller, stub_module.DEFAULT_FAKE_Q, log=lambda msg: print(msg, flush=True),
+            left_index=getattr(hand_module, "Dex3_1_Left_JointIndex", None),
+            right_index=getattr(hand_module, "Dex3_1_Right_JointIndex", None))
         print("[loop-probe] right Dex3 hand state is faked (--fake-right-hand)", flush=True)
 
     stats = Stats()

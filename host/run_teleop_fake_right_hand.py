@@ -35,8 +35,13 @@ from pathlib import Path
 DEFAULT_FAKE_Q = 0.001   # any non-zero value satisfies the controller's `any(state_array)` check
 
 
-def make_stub(base, fake_q=DEFAULT_FAKE_Q, log=print):
-    """Subclass of Dex3_1_Controller whose reader thread pins the right-hand state first."""
+def make_stub(base, fake_q=DEFAULT_FAKE_Q, log=print, left_index=None, right_index=None):
+    """Subclass of Dex3_1_Controller whose reader thread pins the right-hand state first.
+
+    With left_index/right_index (the Dex3_1_*_JointIndex enums) the two hands are also read INDEPENDENTLY:
+    the original loop calls Left.Read() and Right.Read() in lockstep, so a right Read() that never returns
+    keeps the left state from ever being processed.
+    """
 
     class RightHandStateStub(base):
         def _subscribe_hand_state(self):
@@ -54,11 +59,48 @@ def make_stub(base, fake_q=DEFAULT_FAKE_Q, log=print):
                 event.set()
                 log("[right-stub] _right_hand_state_received set (the controller's start-up wait is released)")
             self._start_wait_report(log)
+            can_split = (left_index is not None and right_index is not None
+                         and hasattr(self, "LeftHandState_subscriber") and hasattr(self, "RightHandState_subscriber")
+                         and hasattr(self, "_left_hand_state_received"))
             try:
+                if can_split:
+                    return self._independent_readers(log)
                 return super()._subscribe_hand_state()
             except BaseException as error:  # the reader thread would otherwise die without a trace
                 log(f"[right-stub] original reader thread raised {type(error).__name__}: {error}")
                 raise
+
+        def _independent_readers(self, log):
+            """Left and right read in separate threads, so one silent topic cannot block the other."""
+            import threading
+            import time
+
+            def copy(msg, indices, array, event):
+                for position, joint in enumerate(indices):
+                    array[position] = msg.motor_state[joint].q
+                event.set()
+
+            def right_loop():
+                try:
+                    while True:
+                        msg = self.RightHandState_subscriber.Read()
+                        if msg is not None:
+                            copy(msg, right_index, self.right_hand_state_array, self._right_hand_state_received)
+                        time.sleep(0.002)
+                except BaseException as error:  # noqa: BLE001
+                    log(f"[right-stub] right reader thread raised {type(error).__name__}: {error}")
+
+            threading.Thread(target=right_loop, daemon=True).start()
+            log("[right-stub] left and right hand states are now read independently")
+            first = True
+            while True:
+                msg = self.LeftHandState_subscriber.Read()
+                if msg is not None:
+                    copy(msg, left_index, self.left_hand_state_array, self._left_hand_state_received)
+                    if first:
+                        log("[right-stub] first LEFT hand state received")
+                        first = False
+                time.sleep(0.002)
 
         def _start_wait_report(self, log):
             """Once a second until the start-up wait is released: which side is still missing."""
@@ -161,6 +203,57 @@ def selftest():
     case("a real right-hand state overwrites the constant", abs(controller.right_hand_state_array[0] - 0.9) < 1e-12)
     case("shape check accepts the expected layout", check_shape(FakeDex3) is None)
 
+    # A controller like the real one: lockstep Left.Read()/Right.Read(), the right Read() blocks forever.
+    class FakeMsg:
+        def __init__(self, q):
+            self.motor_state = {0: type("M", (), {"q": q})(), 1: type("M", (), {"q": q})()}
+
+    class Left:
+        def Read(self):
+            time.sleep(0.001)
+            return FakeMsg(0.5)
+
+    class SilentRight:
+        def Read(self):
+            threading.Event().wait()      # never returns: no right-hand publisher
+
+    class Lockstep:
+        def __init__(self):
+            self.left_hand_state_array = Array("d", 2)
+            self.right_hand_state_array = Array("d", 2)
+            self.LeftHandState_subscriber, self.RightHandState_subscriber = Left(), SilentRight()
+            self._left_hand_state_received = threading.Event()
+            self._right_hand_state_received = threading.Event()
+            threading.Thread(target=self._subscribe_hand_state, daemon=True).start()
+            for _ in range(300):
+                if self._left_hand_state_received.is_set() and self._right_hand_state_received.is_set():
+                    return
+                time.sleep(0.01)
+            raise TimeoutError("still waiting for both hand states")
+
+        def _subscribe_hand_state(self):
+            while True:
+                left, right = self.LeftHandState_subscriber.Read(), self.RightHandState_subscriber.Read()
+                if left is not None:
+                    self._left_hand_state_received.set()
+                if right is not None:
+                    self._right_hand_state_received.set()
+
+    try:
+        Lockstep.right_hand_state_array = None
+        Lockstep()
+        case("lockstep reader blocks on a silent right topic (unpatched)", False)
+    except TimeoutError:
+        case("lockstep reader blocks on a silent right topic (unpatched)", True)
+    quiet = lambda *_: None
+    try:
+        patched = make_stub(Lockstep, 0.001, log=quiet, left_index=[0, 1], right_index=[0, 1])()
+        case("independent readers start despite a silent right topic", True)
+        case("left state is the real one", abs(patched.left_hand_state_array[0] - 0.5) < 1e-12)
+        case("right state is still the pinned constant", abs(patched.right_hand_state_array[0] - 0.001) < 1e-12)
+    except TimeoutError:
+        case("independent readers start despite a silent right topic", False)
+
     class Different:
         def __init__(self): pass
     case("shape check rejects a different layout", check_shape(Different) is not None)
@@ -220,8 +313,10 @@ def main():
               "nothing was patched. Paste the source of Dex3_1_Controller.__init__ and its state-reader method "
               f"from {hand_module.__file__}.")
         return 2
-    hand_module.Dex3_1_Controller = make_stub(hand_module.Dex3_1_Controller, fake_q,
-                                              log=lambda msg: print(msg, flush=True))
+    hand_module.Dex3_1_Controller = make_stub(
+        hand_module.Dex3_1_Controller, fake_q, log=lambda msg: print(msg, flush=True),
+        left_index=getattr(hand_module, "Dex3_1_Left_JointIndex", None),
+        right_index=getattr(hand_module, "Dex3_1_Right_JointIndex", None))
     print(f"[right-stub] Dex3_1_Controller patched (fake right state {fake_q}); real teleop starts now.", flush=True)
 
     import run_teleop_with_neck as launcher
