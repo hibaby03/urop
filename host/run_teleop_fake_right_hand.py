@@ -24,9 +24,6 @@ Usage (replaces run_teleop_with_neck.py; kill stale teleop/Vuer processes first,
         --xr-repo ~/hckang/xr_teleoperate --neck-pose-ip 192.168.123.164 \
         --neck-pose-port 5005 --arm=G1_29 --ee=dex3 [--fake-right-q 0.001]
 
-    # OpenCV windows (cv2.imshow/waitKey in the teleop loop) are turned into no-ops by default, because an OpenCV
-    # without GUI support makes the loop die on its first cycle. Add --cv-window to keep the real windows.
-
     python3 run_teleop_fake_right_hand.py --selftest      # checks the patch mechanism, no robot
 """
 from __future__ import annotations
@@ -148,21 +145,6 @@ def check_shape(cls):
     if missing:
         return f"expected names not found in Dex3_1_Controller: {missing}"
     return None
-
-
-def disable_cv_windows(cv2_module):
-    """Turn the OpenCV window calls into no-ops, in this process only.
-
-    The teleop's follow loop calls cv2.imshow / cv2.waitKey every cycle. An OpenCV built without GUI support
-    (opencv-python-headless, or no GTK) raises cv2.error there, the loop dies on its first cycle and the
-    teleop quits through its `finally` (arms go home, nothing follows). The Quest picture does not use
-    these windows. cv2.waitKey returns -1, so the teleop's `key == ord('q')` checks stay false.
-    """
-    cv2_module.imshow = lambda *args, **kwargs: None
-    cv2_module.waitKey = lambda *args, **kwargs: -1
-    cv2_module.namedWindow = lambda *args, **kwargs: None
-    cv2_module.destroyAllWindows = lambda *args, **kwargs: None
-    cv2_module.destroyWindow = lambda *args, **kwargs: None
 
 
 def run_and_report_swallowed(main_callable, argv):
@@ -320,13 +302,6 @@ def selftest():
             pass
     case("a normal exit prints nothing", captured.getvalue() == "")
 
-    import types
-    fake_cv2 = types.SimpleNamespace(imshow=None, waitKey=None, namedWindow=None, destroyAllWindows=None, destroyWindow=None)
-    disable_cv_windows(fake_cv2)
-    fake_cv2.imshow("w", object())
-    case("cv2 window calls become no-ops and waitKey never matches a key",
-         fake_cv2.waitKey(1) == -1 and (fake_cv2.waitKey(1) & 0xFF) != ord("q"))
-
     class Different:
         def __init__(self): pass
     case("shape check rejects a different layout", check_shape(Different) is not None)
@@ -340,8 +315,6 @@ def main():
         return selftest()
 
     argv = sys.argv[1:]
-    keep_cv_window = "--cv-window" in argv          # opt out of the no-op OpenCV windows
-    argv = [a for a in argv if a != "--cv-window"]
     fake_q = DEFAULT_FAKE_Q
     cleaned = []
     skip = False
@@ -393,11 +366,6 @@ def main():
         left_index=getattr(hand_module, "Dex3_1_Left_JointIndex", None),
         right_index=getattr(hand_module, "Dex3_1_Right_JointIndex", None))
     print(f"[right-stub] Dex3_1_Controller patched (fake right state {fake_q}); real teleop starts now.", flush=True)
-
-    if not keep_cv_window:
-        import cv2
-        disable_cv_windows(cv2)
-        print("[right-stub] OpenCV windows disabled (pass --cv-window to keep them)", flush=True)
 
     import run_teleop_with_neck as launcher
     return run_and_report_swallowed(launcher.main, argv)
