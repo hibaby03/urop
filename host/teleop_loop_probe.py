@@ -50,7 +50,9 @@ class Stats:
     def _new():
         return {"td_calls": 0, "td_bad": 0, "td_lo": None, "td_hi": None,
                 "ik_calls": 0, "ik_exc": 0, "ik_nonfinite": 0, "ik_lo": None, "ik_hi": None, "ik_step_max": 0.0,
-                "ctrl_calls": 0, "ctrl_exc": 0, "ctrl_dev_max": 0.0}
+                "ctrl_calls": 0, "ctrl_exc": 0, "ctrl_dev_max": 0.0,
+                "hand_calls": 0, "hand_zero_l": 0, "hand_zero_r": 0,
+                "hl_lo": None, "hl_hi": None, "hr_lo": None, "hr_hi": None}
 
     @staticmethod
     def _range(d, lo, hi, v):
@@ -72,6 +74,21 @@ class Stats:
                     d["td_bad"] += 1
                     continue
                 self._range(d, "td_lo", "td_hi", pos)
+
+    def hands(self, left, right):
+        """Finger skeletons (25x3 each) that the teleop copies into the Dex3 input arrays."""
+        with self.lock:
+            for d in self._each():
+                d["hand_calls"] += 1
+                for side, value in (("l", left), ("r", right)):
+                    if value is None:
+                        d[f"hand_zero_{side}"] += 1
+                        continue
+                    arr = np.asarray(value, float).ravel()
+                    if not np.isfinite(arr).all() or not arr.any():
+                        d[f"hand_zero_{side}"] += 1
+                        continue
+                    self._range(d, f"h{side}_lo", f"h{side}_hi", arr)
 
     def ik(self, current_q, sol_q):
         with self.lock:
@@ -128,6 +145,18 @@ def judge(total, first_error=None):
                     "between the Quest event handler and get_motion_state_data (hand/head arrays not updated)."))
     else:
         out.append(("OK", f"Wrist poses change with your hands (span {pose:.2f} m)."))
+    if total.get("hand_calls"):
+        n = total["hand_calls"]
+        left = span(total["hl_lo"], total["hl_hi"])
+        if total["hand_zero_l"] == n:
+            out.append(("FAIL", "The LEFT finger skeleton was all zeros / missing every cycle: the Dex3 controller treats "
+                        "all zeros as an explicit 'open hand' command, so the left hand cannot close (Quest hand "
+                        "skeleton is not reaching TeleVuerWrapper.left_hand_pos)."))
+        elif left < 0.01:
+            out.append(("FAIL", f"The LEFT finger skeleton never changed (span {left:.3f} m): open/close your left hand "
+                        "during the run; if it still stays constant, finger data from the Quest is not updating."))
+        else:
+            out.append(("OK", f"LEFT finger skeleton changes (span {left:.3f} m): the teleop is feeding the Dex3 input."))
     if total["ik_calls"] == 0:
         out.append(("FAIL", "solve_ik() was never called although the loop ran (different arm/IK path: "
                     "--upperbody-ik / --use-head-waist?)."))
@@ -156,8 +185,10 @@ def judge(total, first_error=None):
 def format_window(w, elapsed):
     if w["td_calls"] == 0:
         return f"[loop] t={elapsed:4.0f}s no follow-loop cycles (waiting for r / not started)"
+    hand = (f"hand span L={span(w['hl_lo'], w['hl_hi']):.3f}m R={span(w['hr_lo'], w['hr_hi']):.3f}m "
+            f"zero L/R={w['hand_zero_l']}/{w['hand_zero_r']} | ") if w.get("hand_calls") else ""
     return (f"[loop] t={elapsed:4.0f}s cycles/s={w['td_calls']} bad_pose={w['td_bad']} | "
-            f"wrist span L+R={span(w['td_lo'], w['td_hi']):.3f}m | "
+            f"wrist span L+R={span(w['td_lo'], w['td_hi']):.3f}m | {hand}"
             f"IK calls={w['ik_calls']} exc={w['ik_exc']} nan={w['ik_nonfinite']} span={span(w['ik_lo'], w['ik_hi']):.3f}rad "
             f"| ctrl calls={w['ctrl_calls']} max|tgt-cur|={w['ctrl_dev_max']:.2f}rad")
 
@@ -172,6 +203,8 @@ def install_hooks(stats, wrapper_cls, ik_cls, ctrl_cls):
         data = original_td(self, *args, **kwargs)
         try:
             stats.td(getattr(data, "left_arm_pose", None), getattr(data, "right_arm_pose", None))
+            if hasattr(data, "left_hand_pos") or hasattr(data, "right_hand_pos"):
+                stats.hands(getattr(data, "left_hand_pos", None), getattr(data, "right_hand_pos", None))
         except Exception:  # noqa: BLE001 - a probe must never break the teleop
             pass
         return data
