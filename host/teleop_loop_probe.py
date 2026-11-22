@@ -376,7 +376,10 @@ def main():
     print("[loop-probe] hooks installed (G1_29 arm only). Press r in this terminal, then move your arms.", flush=True)
 
     import run_teleop_with_neck as launcher
-    from run_teleop_fake_right_hand import run_and_report_swallowed
+    from run_teleop_fake_right_hand import disable_cv_windows, run_and_report_swallowed
+    import cv2
+    disable_cv_windows(cv2)
+    print("[loop-probe] OpenCV windows disabled", flush=True)
     return run_and_report_swallowed(launcher.main, argv)
 
 
