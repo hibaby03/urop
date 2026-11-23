@@ -26,6 +26,7 @@ cd ~/hckang/jslee/urop && git pull && git log --oneline -1     # confirm you are
 pgrep -af "teleop_hand_and_arm|run_teleop"                      # kill leftovers; port 8012 must be free
 
 cd ~/hckang/xr_teleoperate
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python ~/hckang/jslee/urop/host/run_teleop_fake_right_hand.py \
   --xr-repo ~/hckang/xr_teleoperate --neck-pose-ip 192.168.123.164 \
   --neck-pose-port 5005 --arm=G1_29 --ee=dex3
@@ -48,6 +49,7 @@ not automatic here) and prints one `[loop]` line per second:
 
 ```bash
 cd ~/hckang/xr_teleoperate
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python ~/hckang/jslee/urop/host/teleop_loop_probe.py \
   --xr-repo ~/hckang/xr_teleoperate --neck-pose-ip 192.168.123.164 \
   --neck-pose-port 5005 --arm=G1_29 --ee=dex3 --fake-right-hand --headless 2>&1 \
@@ -60,8 +62,6 @@ python ~/hckang/jslee/urop/host/teleop_loop_probe.py \
 * In another terminal, `top -bn1 -o %CPU | head -12` while it runs: a process near 1800% CPU means the
   numeric libraries are oversubscribing the cores.
 
-Experiment (**not yet confirmed to help**): limit the thread pools by putting this in front of the command:
-
-```bash
-OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 python ~/hckang/jslee/urop/host/teleop_loop_probe.py ...
-```
+* The `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1` prefix limits the numeric thread pools. Without it the
+  teleop process was seen using ~1800% CPU (all cores) with the loop at 1 cycle/s. Its benefit on the arm behavior is
+  still to be confirmed on the robot; check `cycles/s` and `top` after starting.
